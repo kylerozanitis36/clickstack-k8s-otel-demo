@@ -2,11 +2,11 @@
 
 Run a lightweight, multi-node Kubernetes cluster locally on macOS, as the foundation
 for collecting logs, metrics, and traces with an OpenTelemetry collector and shipping
-them to ClickHouse Cloud / ClickStack (HyperDX).
+them to ClickHouse Cloud / ClickStack (HyperDX) via a standalone OpenTelemetry collector
+acting as a gateway.
 
-This repo currently covers **step 1: hosting the cluster locally**. The cluster uses
-[kind](https://kind.sigs.k8s.io/) (Kubernetes-in-Docker) and is fully declarative so
-colleagues can recreate the exact same cluster from checked-in config.
+The cluster uses [kind](https://kind.sigs.k8s.io/) (Kubernetes-in-Docker) and is fully
+declarative so others can recreate the exact same cluster from checked-in config.
 
 ## Prerequisites
 
@@ -48,7 +48,7 @@ make status              # nodes + pods
 ## How it works
 
 - [`.env`](.env.example) holds the cluster name, pinned node image, kubeconfig path, and
-  (for phase 2) the ClickHouse Cloud endpoint/credentials + gateway endpoint.
+  the ClickHouse Cloud endpoint/credentials + gateway endpoint.
 - [`kind/cluster-config.yaml`](kind/cluster-config.yaml) is a template; `scripts/create-cluster.sh`
   renders it with `envsubst` and feeds it to `kind`.
 - [`scripts/preflight.sh`](scripts/preflight.sh) checks Docker is running and installs missing tools.
