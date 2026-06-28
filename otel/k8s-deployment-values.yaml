@@ -1,0 +1,47 @@
+# =============================================================================
+# k8s-deployment-values.yaml  —  single cluster AGENT (events + cluster metrics)
+# =============================================================================
+# One replica only (more would duplicate data). Collects Kubernetes events and
+# cluster-wide metrics, then ships to the GATEWAY over OTLP/HTTP.
+#
+#   helm install otel-cluster open-telemetry/opentelemetry-collector -f k8s-deployment-values.yaml
+# =============================================================================
+
+mode: deployment
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  # Must match the helm chart's appVersion: the kubernetesAttributes preset
+  # emits config keys (e.g. otel_annotations) only present in newer collectors.
+  tag: "0.154.0"
+
+replicaCount: 1
+
+presets:
+  kubernetesAttributes:
+    enabled: true
+    extractAllPodLabels: true
+    extractAllPodAnnotations: true
+  kubernetesEvents:
+    enabled: true
+  clusterMetrics:
+    enabled: true
+
+extraEnvs:
+  - name: YOUR_OTEL_COLLECTOR_ENDPOINT
+    valueFrom:
+      configMapKeyRef:
+        name: otel-config-vars
+        key: YOUR_OTEL_COLLECTOR_ENDPOINT
+
+config:
+  exporters:
+    otlphttp:
+      endpoint: "${env:YOUR_OTEL_COLLECTOR_ENDPOINT}"
+      compression: gzip
+  service:
+    pipelines:
+      logs:
+        exporters: [otlphttp]
+      metrics:
+        exporters: [otlphttp]

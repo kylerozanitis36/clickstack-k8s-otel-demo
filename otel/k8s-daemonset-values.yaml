@@ -1,0 +1,86 @@
+# =============================================================================
+# k8s-daemonset-values.yaml  —  per-node AGENT (logs + node/pod metrics)
+# =============================================================================
+# Runs on every node. Collects container logs (filelog) and node/pod metrics
+# (hostmetrics + kubeletstats), enriches with k8s metadata, then ships
+# everything to the GATEWAY over OTLP/HTTP.
+#
+#   # point the agents at your gateway service
+#   kubectl create configmap otel-config-vars \
+#     --from-literal=YOUR_OTEL_COLLECTOR_ENDPOINT=http://clickstack-gateway-opentelemetry-collector:4318
+#
+#   helm install otel-agent open-telemetry/opentelemetry-collector -f k8s-daemonset-values.yaml
+# =============================================================================
+
+mode: daemonset
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  # Must match the helm chart's appVersion: the kubernetesAttributes preset
+  # emits config keys (e.g. otel_annotations) only present in newer collectors.
+  tag: "0.154.0"
+
+# Run on the control-plane node too, so we collect its logs/metrics
+# (apiserver, etcd, scheduler) — otherwise the control-plane taint excludes it.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: ['']
+      resources: ['nodes/proxy']
+      verbs: ['get']
+
+presets:
+  logsCollection:
+    enabled: true
+  hostMetrics:
+    enabled: true
+  kubernetesAttributes:
+    enabled: true
+    extractAllPodLabels: true
+    extractAllPodAnnotations: true
+  kubeletMetrics:
+    enabled: true
+
+extraEnvs:
+  - name: YOUR_OTEL_COLLECTOR_ENDPOINT
+    valueFrom:
+      configMapKeyRef:
+        name: otel-config-vars
+        key: YOUR_OTEL_COLLECTOR_ENDPOINT
+
+config:
+  receivers:
+    kubeletstats:
+      collection_interval: 20s
+      auth_type: 'serviceAccount'
+      endpoint: '${env:K8S_NODE_NAME}:10250'
+      insecure_skip_verify: true
+      metrics:
+        k8s.pod.cpu_limit_utilization: { enabled: true }
+        k8s.pod.cpu_request_utilization: { enabled: true }
+        k8s.pod.memory_limit_utilization: { enabled: true }
+        k8s.pod.memory_request_utilization: { enabled: true }
+        k8s.pod.uptime: { enabled: true }
+        k8s.node.uptime: { enabled: true }
+        k8s.container.cpu_limit_utilization: { enabled: true }
+        k8s.container.cpu_request_utilization: { enabled: true }
+        k8s.container.memory_limit_utilization: { enabled: true }
+        k8s.container.memory_request_utilization: { enabled: true }
+        container.uptime: { enabled: true }
+
+  exporters:
+    otlphttp:
+      endpoint: "${env:YOUR_OTEL_COLLECTOR_ENDPOINT}"
+      compression: gzip
+
+  service:
+    pipelines:
+      logs:
+        exporters: [otlphttp]
+      metrics:
+        exporters: [otlphttp]

@@ -1,0 +1,17 @@
+# Local environment (secrets / machine-specific values)
+.env
+
+# Project-local kubeconfig written by kind
+.kube/
+
+# Rendered kind config (generated from kind/cluster-config.yaml)
+kind/.cluster-config.rendered.yaml
+
+# Rendered helm values (generated from *.yaml templates with envsubst)
+*.rendered.yaml
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# macOS
+.DS_Store

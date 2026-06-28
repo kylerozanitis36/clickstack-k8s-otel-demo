@@ -1,0 +1,42 @@
+# =============================================================================
+# gateway-values.yaml  —  ClickStack OTel collector (GATEWAY role)
+# =============================================================================
+# This is the only collector that talks to ClickHouse Cloud. It uses the
+# ClickStack distribution image, which has the `clickhouse` exporter baked in
+# and configured purely through the CLICKHOUSE_* environment variables below.
+#
+# Deploy with the UPSTREAM OpenTelemetry collector Helm chart:
+#
+#   helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   helm repo update
+#   helm install clickstack-gateway open-telemetry/opentelemetry-collector -f gateway-values.yaml
+# =============================================================================
+
+mode: deployment
+
+image:
+  repository: docker.clickhouse.com/clickhouse/clickstack-otel-collector
+  tag: "2.19.0"
+
+ports:
+  otlp:
+    enabled: true
+  otlp-http:
+    enabled: true
+
+extraEnvs:
+  - name: CLICKHOUSE_ENDPOINT
+    valueFrom:
+      secretKeyRef:
+        name: clickhouse-credentials
+        key: CLICKHOUSE_ENDPOINT
+  - name: CLICKHOUSE_USER
+    valueFrom:
+      secretKeyRef:
+        name: clickhouse-credentials
+        key: CLICKHOUSE_USER
+  - name: CLICKHOUSE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: clickhouse-credentials
+        key: CLICKHOUSE_PASSWORD

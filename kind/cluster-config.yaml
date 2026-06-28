@@ -1,0 +1,20 @@
+# kind cluster manifest (template).
+# Placeholders (${VAR}) are rendered by envsubst in scripts/create-cluster.sh
+# using values from .env. Do not run kind against this file directly.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ${CLUSTER_NAME}
+nodes:
+  - role: control-plane
+    image: ${KIND_NODE_IMAGE}
+    # Reserve host ports for a future ingress controller, so we can expose the
+    # OpenTelemetry collector / HyperDX UI on localhost:8080 and :8443 later.
+    extraPortMappings:
+      - { containerPort: 80, hostPort: 8080, protocol: TCP }
+      - { containerPort: 443, hostPort: 8443, protocol: TCP }
+  - role: worker
+    image: ${KIND_NODE_IMAGE}
+  - role: worker
+    image: ${KIND_NODE_IMAGE}
+# Note: kind nodes already expose /var/log/pods and /var/log/containers, so a
+# future OpenTelemetry DaemonSet can hostPath-mount them with no extra config.
