@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down recreate status kubeconfig otel-up otel-down otel-status
+.PHONY: help up down recreate status kubeconfig otel-up otel-down otel-status ingress-up ingress-down ingress-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -29,3 +29,12 @@ otel-down: ## Remove the OTel pipeline (keeps the cluster)
 
 otel-status: ## Show OTel/demo workloads
 	@kubectl -n observability get pods -o wide && echo && kubectl -n otel-demo get pods
+
+ingress-up: ## Expose the OTel Demo UI on http://localhost:8080 (run after otel-up)
+	@scripts/deploy-ingress.sh
+
+ingress-down: ## Remove the ingress controller + demo Ingress (keeps the cluster)
+	@scripts/teardown-ingress.sh
+
+ingress-status: ## Show the ingress controller + demo Ingress
+	@kubectl -n ingress-nginx get pods -o wide && echo && kubectl -n otel-demo get ingress

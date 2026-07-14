@@ -64,7 +64,8 @@ otel/                     OpenTelemetry Helm values:
   k8s-daemonset-values.yaml per-node agent: logs + host/kubelet metrics
   k8s-deployment-values.yaml single agent: k8s events + cluster metrics
   otel-demo-values.yaml      OTel Demo, routed to the gateway (envsubst template)
-scripts/                  create/delete cluster + deploy/teardown OTel
+ingress/frontend-ingress.yaml  Ingress exposing the demo UI on localhost:8080
+scripts/                  create/delete cluster + deploy/teardown OTel + ingress
 docs/superpowers/         design spec + implementation plan
 ```
 
@@ -134,6 +135,31 @@ envsubst '${OTEL_GATEWAY_ENDPOINT}' < otel/otel-demo-values.yaml > otel/.otel-de
 helm install otel-demo open-telemetry/opentelemetry-demo -n otel-demo -f otel/.otel-demo-values.rendered.yaml
 ```
 
+### Access the demo UI on localhost:8080
+
+The cluster reserves host ports `8080 -> :80` (see the layout table) for an ingress
+controller. Deploy [ingress-nginx](https://kind.sigs.k8s.io/docs/user/ingress/) plus
+an `Ingress` that routes to the demo's `frontend-proxy`, and the storefront is served
+on your Mac:
+
+```bash
+make ingress-up       # run AFTER make otel-up (the Ingress targets frontend-proxy)
+open http://localhost:8080
+make ingress-status   # controller pod + Ingress
+make ingress-down     # remove the controller + Ingress (keeps the cluster)
+```
+
+How it works: kind publishes host `8080 -> control-plane node :80`. ingress-nginx
+binds `hostPort` 80, so `scripts/deploy-ingress.sh` pins the controller to the
+control-plane node (the one with the port mapping) and applies
+[ingress/frontend-ingress.yaml](ingress/frontend-ingress.yaml). Traffic flows:
+`localhost:8080 -> node :80 -> nginx -> frontend-proxy -> demo UI`.
+
+> The ingress-nginx version is pinned in `scripts/deploy-ingress.sh`. k8s v1.36.1 is
+> newer than any ingress-nginx release officially tests against, so the script waits
+> for the controller to reach `Ready` and verifies `localhost:8080` returns `200`;
+> bump the pin if it ever fails to come up.
+
 ### Verify the gateway connected to Cloud
 ```bash
 kubectl -n observability logs deploy/clickstack-gateway-opentelemetry-collector \
@@ -155,4 +181,5 @@ kubectl -n observability logs deploy/clickstack-gateway-opentelemetry-collector 
 ```bash
 make recreate    # cluster: same 3-node Ready state
 make otel-up     # redeploy the full pipeline
+make ingress-up  # re-expose the demo UI on localhost:8080
 ```
