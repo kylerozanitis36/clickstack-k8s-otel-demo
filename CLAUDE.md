@@ -13,7 +13,8 @@ by Docker Desktop. Topology: 1 control-plane + 2 workers, so node-level telemetr
 - Config is fully declarative: [kind/cluster-config.yaml](kind/cluster-config.yaml) is a template
   rendered with `envsubst` (from `.env`) by `scripts/create-cluster.sh`.
 - kubeconfig is project-local at `./.kube/config` (isolated from `~/.kube/config`), context `kind-clickstack-local`.
-- Control-plane reserves host ports `8080->:80` and `8443->:443` for a future ingress controller.
+- Control-plane reserves host ports `8080->:80` and `8443->:443`; `8080->:80` is now
+  used by the ingress controller (see "Demo UI ingress" below). `8443->:443` still free.
 - kind nodes already expose `/var/log/pods` + `/var/log/containers`, so a future OTel DaemonSet can
   hostPath-mount them with no extra cluster config.
 
@@ -45,7 +46,24 @@ Design + plan: [docs/superpowers/specs/](docs/superpowers/specs/) and [docs/supe
 - `otel/otel-demo-values.yaml` nulls the demo collector's hostPorts (the cluster `otel-agent`
   DaemonSet already binds them) and disables the flagd-ui sidecar (OOMs at 250Mi).
 
+## Demo UI ingress (phase 3 — done)
+`make ingress-up` (run after `make otel-up`) exposes the OTel Demo storefront on
+`http://localhost:8080`. It deploys ingress-nginx via kind's static manifest (pinned in
+`scripts/deploy-ingress.sh`) and applies `ingress/frontend-ingress.yaml` (routes `/` to
+`otel-demo/frontend-proxy:8080`). `make ingress-down` removes it; `make ingress-status` shows it.
+
+### Gotchas (learned during setup)
+- kind maps host `8080 -> control-plane node :80`, and ingress-nginx binds `hostPort` 80.
+  Newer ingress-nginx kind manifests (v1.15.x) dropped the `ingress-ready` nodeSelector, so
+  on a **multi-node** cluster the controller could land on a worker (no host mapping). The
+  deploy script therefore **patches the controller's nodeSelector to
+  `node-role.kubernetes.io/control-plane`** so it lands on the node with the port mapping;
+  the manifest already tolerates the control-plane taint.
+- The script waits for the controller `Ready` (admission webhook serving) before applying the
+  Ingress, then verifies `localhost:8080` returns 200.
+
 ## Status / Next Steps
-Done: local cluster hosting (phase 1) + OTel collection into ClickHouse Cloud (phase 2).
+Done: local cluster hosting (phase 1) + OTel collection into ClickHouse Cloud (phase 2)
++ demo UI ingress on localhost:8080 (phase 3).
 Possible next: dashboards/alerts in HyperDX, sampling/retention tuning, or app-level
 instrumentation beyond the demo.

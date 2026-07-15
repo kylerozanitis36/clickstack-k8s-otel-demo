@@ -1,0 +1,24 @@
+# Routes all host traffic arriving at the ingress controller (localhost:8080 ->
+# control-plane node :80 -> nginx) to the OTel Demo's frontend-proxy service.
+# frontend-proxy is the demo's single Envoy entrypoint; it fans out to the
+# frontend and backing services internally.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: otel-demo-frontend
+  namespace: otel-demo
+  annotations:
+    # The demo serves images/streams; don't cap request body size.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-proxy
+                port:
+                  number: 8080
