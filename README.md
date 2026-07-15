@@ -212,6 +212,11 @@ kubectl -n observability logs deploy/clickstack-gateway-opentelemetry-collector 
   **restarts flagd** — flagd reads the flag file only at startup. See
   [Failure scenarios](#failure-scenarios-always-on-error-patterns) and
   `make otel-scenarios`.
+- **The Playwright browser-traffic Locust user is disabled**
+  (`LOCUST_BROWSER_TRAFFIC_ENABLED=false`). In demo image 2.2.0 it crashes on every task
+  (`'WebsiteBrowserUser' object has no attribute 'tracer'`, an upstream locustfile bug),
+  adding only 100%-failing noise. The API load user still drives all the
+  browse/cart/checkout traffic, so the failure scenarios above work as expected.
 
 ## Reproducibility check
 

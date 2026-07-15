@@ -64,6 +64,13 @@ Locust load generator ships enabled by default; only the failure flags are toggl
   `kubernetesAttributes` preset emits config keys older images reject (crash loop).
 - `otel/otel-demo-values.yaml` nulls the demo collector's hostPorts (the cluster `otel-agent`
   DaemonSet already binds them) and disables the flagd-ui sidecar (OOMs at 250Mi).
+- **Browser-traffic Locust user is disabled** (`LOCUST_BROWSER_TRAFFIC_ENABLED=false` via
+  `components.load-generator.envOverrides`). In demo image 2.2.0 it crashes on every task
+  (`AttributeError: 'WebsiteBrowserUser' object has no attribute 'tracer'`) — upstream
+  locustfile bug: `PlaywrightUser.__init__` shallow-copies the user into `sub_users` (which
+  run the tasks) *before* the subclass sets `self.tracer`. It's not config-fixable in the
+  image and only added 100%-failing noise; the API `WebsiteUser` reliably drives the
+  checkout/payment failures. Re-enabling needs a patched locustfile or a fixed image tag.
 
 ## Demo UI ingress (phase 3 — done)
 `make ingress-up` (run after `make otel-up`) exposes the OTel Demo storefront on
