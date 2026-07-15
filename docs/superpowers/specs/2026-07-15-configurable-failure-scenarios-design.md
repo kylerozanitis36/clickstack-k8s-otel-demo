@@ -67,9 +67,22 @@ flag JSON. Two rejected alternatives:
 
 Chosen: **delta-patch at deploy time.** We encode only the intent (which flags ->
 which variants), render the chart's canonical flag JSON for the pinned version,
-apply the delta, write it into the `flagd-config` ConfigMap, and restart flagd. This
-self-heals on chart upgrades (we never copy the full catalog) and keeps intent
-obvious.
+apply the delta, and deliver it to flagd — self-healing on chart upgrades (we never
+copy the full catalog) and keeping intent obvious.
+
+**Delivery: our own ConfigMap, not the chart's.** The obvious delivery — overwrite
+the chart-managed `flagd-config` ConfigMap in place — does **not** work: this Helm
+version uses server-side apply and re-applies `flagd-config` on every
+`helm upgrade`, so a `kubectl apply` of our patched content takes field ownership of
+`.data."demo.flagd.json"` and the next `helm upgrade` then **fails** with a
+field-manager conflict. So instead we write the patched JSON into our **own**
+ConfigMap `flagd-config-scenarios` and point flagd at it via a
+`components.flagd.additionalVolumes` override in `otel-demo-values.yaml` (the init
+container still copies `/config-ro/demo.flagd.json`, so the key name is unchanged).
+The chart's `flagd-config` is left untouched (created but unused), so there is no
+ownership fight. This does couple us to the chart's flagd volume names
+(`config-ro` / filename `demo.flagd.json`), which are stable; the fail-fast
+validation and a flagd rollout catch any future drift.
 
 ### flagd reads the file once at startup
 
@@ -80,25 +93,35 @@ This is why the mechanism restarts flagd as its last step.
 
 ### Delta-patch flow (in `scripts/deploy-otel.sh`)
 
+All resolution + validation happens **before any deploy**, so a bad `SCENARIOS`
+fails fast without touching the cluster:
+
 1. **Render the canonical flag JSON + validation catalog** for the pinned chart:
-   `helm template otel-demo open-telemetry/opentelemetry-demo -f <rendered values>
-   --show-only templates/flagd-config.yaml`, extract `data["demo.flagd.json"]`. This
-   is the single source of truth for both valid flag names and each flag's valid
-   variants, so validation never drifts from the chart.
+   `helm pull open-telemetry/opentelemetry-demo --untar` and read
+   `flagd/demo.flagd.json` (pure JSON, directly `jq`-readable — no YAML parsing).
+   This is the single source of truth for both valid flag names and each flag's valid
+   variants, so validation never drifts from the chart. The demo is then installed
+   from this same pulled chart, so the catalog always matches what is deployed.
 2. **Resolve the selection** from `SCENARIOS` (or the default set), **validate**
    each entry against the catalog, and build a `jq` filter that sets
    `.flags[<name>].defaultVariant = <variant>` for each selected flag. All other
-   flags remain `off`.
-3. `helm upgrade --install otel-demo …` (unchanged from today).
-4. Apply the patched JSON into the `flagd-config` ConfigMap
-   (`kubectl create configmap flagd-config -n otel-demo
-   --from-file=demo.flagd.json=<patched> --dry-run=client -o yaml | kubectl apply -f -`).
-5. `kubectl -n otel-demo rollout restart deploy/flagd`.
+   flags remain `off`. Unknown flag/variant or a variant-less flag with no `on`
+   variant exits non-zero here.
+3. Apply the patched JSON into our **own** ConfigMap
+   `flagd-config-scenarios` (`kubectl create configmap flagd-config-scenarios
+   -n otel-demo --from-file=demo.flagd.json=<patched> --dry-run=client -o yaml |
+   kubectl apply -f -`) — before the demo install, so flagd can mount it on first
+   start. We own this ConfigMap outright, so the apply is clean and idempotent.
+4. `helm upgrade --install otel-demo <pulled-chart> …` with
+   `otel-demo-values.yaml` pointing flagd's `config-ro` volume at
+   `flagd-config-scenarios`.
+5. `kubectl -n otel-demo rollout restart deploy/flagd` (flagd reads the flag file
+   only at startup, so a content change on a re-run needs a rollout).
 
-On every re-run, `helm upgrade` first resets the ConfigMap to the chart default,
-then step 4 re-patches it — so the end state is always correct and the flow is
-idempotent. `otel-demo-values.yaml` is **unchanged**: flags are handled entirely by
-the patch step, so we do not couple to the chart's flagd volume layout.
+The flow is idempotent: our ConfigMap is re-applied and flagd re-rolled every run,
+and Helm never contends for it. `otel-demo-values.yaml` gains a small
+`components.flagd.additionalVolumes` override (the config-ro mount) so flagd loads
+our ConfigMap instead of the chart's static `flagd-config`.
 
 ## Interface: the `SCENARIOS` variable
 
@@ -125,12 +148,15 @@ the patch step, so we do not couple to the chart's flagd volume layout.
 
 | File | Change |
 |------|--------|
-| `scripts/deploy-otel.sh` | Add SCENARIOS parse/validate + render canonical flag JSON + `jq` delta-patch + apply `flagd-config` + `rollout restart deploy/flagd`. |
+| `scripts/deploy-otel.sh` | Add (early, fail-fast) SCENARIOS parse/validate + pull chart + `jq` delta-patch; apply `flagd-config-scenarios` ConfigMap; install demo from the pulled chart; `rollout restart deploy/flagd`. |
+| `otel/otel-demo-values.yaml` | Add `components.flagd.additionalVolumes` (config-ro) pointing flagd at `flagd-config-scenarios` instead of the chart's `flagd-config`. |
+| `scripts/preflight.sh` | Ensure `jq` is installed. |
+| `scripts/list-scenarios.sh` | New: pull the chart and print every flag + its variants + description (backs `make otel-scenarios`). |
 | `Makefile` | `otel-up` passes `SCENARIOS` through (`@SCENARIOS="$(SCENARIOS)" scripts/deploy-otel.sh`); new `otel-scenarios` target prints the available flags + variants (discoverability for the `flag=variant` syntax). |
-| `CLAUDE.md` | Document `SCENARIOS`, the three modes, and the "flag JSON baked into chart -> delta-patch + restart flagd" gotcha. |
+| `CLAUDE.md` | Document `SCENARIOS`, the three modes, and the "flag JSON baked into chart -> mount a delta-patched ConfigMap + restart flagd" gotcha. |
 | `README.md` | Document `make otel-up SCENARIOS=…`. |
 
-Dependencies: `jq` (add to `scripts/preflight.sh` if not already ensured).
+Dependencies: `jq` (added to `scripts/preflight.sh`).
 
 ## Error handling
 

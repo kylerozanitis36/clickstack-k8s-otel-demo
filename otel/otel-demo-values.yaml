@@ -47,6 +47,15 @@ components:
   # It OOMs at its 250Mi default and isn't needed; the flagd server still runs.
   flagd:
     sidecarContainers: []
+    # Mount our delta-patched flag file instead of the chart's static flagd-config.
+    # scripts/deploy-otel.sh builds the `flagd-config-scenarios` ConfigMap from the
+    # SCENARIOS selection; mounting our own ConfigMap (rather than overwriting the
+    # chart-managed flagd-config) avoids fighting Helm for field ownership. The init
+    # container still copies /config-ro/demo.flagd.json, so the key name is unchanged.
+    additionalVolumes:
+      - name: config-ro
+        configMap:
+          name: flagd-config-scenarios
 
 # Keep the footprint light — our gateway + ClickHouse Cloud replace these.
 jaeger:

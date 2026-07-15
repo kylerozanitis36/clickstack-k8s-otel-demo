@@ -38,7 +38,26 @@ Design + plan: [docs/superpowers/specs/](docs/superpowers/specs/) and [docs/supe
 - **OTel Demo** (`otel-demo` ns) generates traces; its bundled collector forwards to the gateway.
 - Values files live in `otel/`: `gateway-values.yaml`, `k8s-daemonset-values.yaml`,
   `k8s-deployment-values.yaml`, `otel-demo-values.yaml` (template rendered with envsubst).
-  Commands: `make otel-up`/`otel-down`/`otel-status`.
+  Commands: `make otel-up`/`otel-down`/`otel-status`/`otel-scenarios`.
+
+### Failure scenarios (feature flags)
+`make otel-up` enables a selectable set of the demo's built-in failure scenarios
+(flagd feature flags) so the pipeline continuously emits real error patterns. The
+Locust load generator ships enabled by default; only the failure flags are toggled.
+- `make otel-up` → 3 defaults: `paymentFailure=25%` (the `Failed to place order`
+  story), `recommendationCacheFailure=on`, `productCatalogFailure=on`.
+- `make otel-up SCENARIOS=none` → no failures (healthy demo).
+- `make otel-up SCENARIOS="flag[=variant] ..."` → exactly those flags (bare flag →
+  `on`, `paymentFailure` bare → `25%`); unknown flags/variants fail loudly.
+- `make otel-scenarios` → list the flag catalog + variants.
+- Mechanism: the demo chart bakes the flag catalog into a static file with **no Helm
+  override**, so `scripts/deploy-otel.sh` pulls the chart, delta-patches the selected
+  flags' `defaultVariant` into its **own** `flagd-config-scenarios` ConfigMap (flagd
+  mounts it via a `components.flagd.additionalVolumes` override in
+  `otel-demo-values.yaml`; the chart's own `flagd-config` is left untouched to avoid a
+  Helm server-side-apply field-ownership conflict), then **restarts flagd** (it reads
+  the flag file only at startup). Idempotent; self-heals on chart upgrades.
+  Design: [docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md](docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md).
 
 ### Gotchas (learned during setup)
 - Agent collector image tag **must match the helm chart's appVersion** (`0.154.0`); the
