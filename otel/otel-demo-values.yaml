@@ -11,6 +11,23 @@
 # =============================================================================
 
 opentelemetry-collector:
+  # Disable the demo collector's INFRASTRUCTURE receivers. Our cluster otel-agent
+  # (host + kubelet metrics) and otel-cluster (k8s cluster metrics) already collect
+  # these cluster-wide, so the demo collector doing it too both DOUBLE-COUNTS infra
+  # metrics and floods logs with kubelet TLS scrape errors — its kubeletstats uses
+  # endpoint ${env:K8S_NODE_IP}:10250 with no insecure_skip_verify, and kind's kubelet
+  # serving cert has no IP SANs ("cannot validate certificate ... doesn't contain any
+  # IP SANs"). Disabling the presets removes both the receivers and their pipeline
+  # entries, leaving the demo collector to forward only APP telemetry (otlp, kafka,
+  # spanmetrics, annotation-discovered metrics) to the gateway.
+  presets:
+    hostMetrics:
+      enabled: false
+    kubeletMetrics:
+      enabled: false
+    clusterMetrics:
+      enabled: false
+
   # Our cluster otel-agent DaemonSet already binds these node hostPorts, so the
   # demo's collector can't claim them. The demo apps reach this collector via its
   # Service DNS, so we drop the hostPorts (keeping the Service/container ports).

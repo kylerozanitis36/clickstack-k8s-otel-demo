@@ -30,7 +30,10 @@ helm repo update open-telemetry >/dev/null
 #   none                  -> no failure scenarios (clean/healthy demo)
 #   "flag[=variant] ..."  -> exactly those flags (bare flag -> 'on',
 #                            paymentFailure bare -> 25%)
-DEFAULT_SCENARIOS="paymentFailure=25% recommendationCacheFailure=on productCatalogFailure=on"
+# Default is payment-only: it mirrors the ClickStack payment incident walkthrough
+# (checkout PlaceOrder failing on the payment charge) without the extra product-catalog
+# / recommendation error noise. Add more via SCENARIOS="..." when a richer mix helps.
+DEFAULT_SCENARIOS="paymentFailure=25%"
 
 CHART_DIR="$(mktemp -d)"
 trap 'rm -rf "$CHART_DIR"' EXIT
@@ -124,6 +127,16 @@ helm upgrade --install otel-cluster open-telemetry/opentelemetry-collector -n ob
 # never fight Helm for ownership of a chart-managed object. It must exist before the
 # demo install so flagd can mount it on first start. We own it outright, so a plain
 # client-side apply is clean and idempotent.
+#
+# Detect whether the selection changed vs what's already deployed. A fresh install
+# needs no restarts (Helm starts flagd and its consumers together with the right
+# flags); only a scenario CHANGE on a running cluster requires restarts (below).
+FLAGS_CHANGED=0
+if EXISTING_FLAGS=$(kubectl -n otel-demo get configmap flagd-config-scenarios \
+      -o jsonpath='{.data.demo\.flagd\.json}' 2>/dev/null) && [ -n "$EXISTING_FLAGS" ]; then
+  [ "$EXISTING_FLAGS" = "$(cat "$PATCHED")" ] || FLAGS_CHANGED=1
+fi
+
 kubectl create configmap flagd-config-scenarios -n otel-demo \
   --from-file=demo.flagd.json="$PATCHED" \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -136,10 +149,24 @@ ENVSUBST="$(command -v envsubst || echo "$(brew --prefix gettext)/bin/envsubst")
 helm upgrade --install otel-demo "$DEMO_CHART" \
   -n otel-demo -f otel/.otel-demo-values.rendered.yaml
 
-# flagd reads the flag file only at startup (an init container copies it), so when the
-# ConfigMap content changes on a re-run, flagd needs a rollout to pick it up.
-kubectl -n otel-demo rollout restart deploy/flagd
-kubectl -n otel-demo rollout status deploy/flagd --timeout=120s
+# When the selection changed on an already-running cluster, restart flagd AND its
+# consumers. flagd reads the flag file only at startup (init-container copy), so it
+# needs a rollout to load the new file. Its consumers (product-catalog, recommendation,
+# payment, cart, ...) hold their flagd connection and keep serving the PREVIOUS flags
+# when only flagd restarts, so they must reconnect too — otherwise stale scenarios linger.
+if [ "$FLAGS_CHANGED" = "1" ]; then
+  kubectl -n otel-demo rollout restart deploy/flagd
+  kubectl -n otel-demo rollout status deploy/flagd --timeout=120s
+  CONSUMERS=$(kubectl -n otel-demo get deploy -o json \
+    | jq -r '.items[] | select(any(.spec.template.spec.containers[].env[]?; .name=="FLAGD_HOST")) | .metadata.name' \
+    | tr '\n' ' ')
+  if [ -n "${CONSUMERS// /}" ]; then
+    echo "Scenario selection changed — restarting flagd consumers so they pick it up:"
+    echo "  $CONSUMERS"
+    kubectl -n otel-demo rollout restart deploy $CONSUMERS
+    kubectl -n otel-demo rollout status deploy/product-catalog --timeout=120s
+  fi
+fi
 
 echo
 if [ -n "$SELECTION" ]; then

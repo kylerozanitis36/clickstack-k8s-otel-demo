@@ -114,15 +114,15 @@ continuously produces real error patterns (failing traces, error-rate spikes,
 correlated infra metrics) for a live, always-fresh demo.
 
 ```bash
-make otel-up                                   # default: paymentFailure=25% recommendationCacheFailure=on productCatalogFailure=on
+make otel-up                                   # default: paymentFailure=25% (payment incident only)
 make otel-up SCENARIOS=none                     # clean/healthy demo, no failures
 make otel-up SCENARIOS="paymentFailure=50% kafkaQueueProblems=on"   # custom
 make otel-scenarios                             # list every flag + its variants
 ```
 
-- **Default** (bare `make otel-up`): `paymentFailure=25%` (~1 in 4 checkouts fails at
-  the charge step → `Failed to place order`), `recommendationCacheFailure=on`, and
-  `productCatalogFailure=on`.
+- **Default** (bare `make otel-up`): `paymentFailure=25%` — ~1 in 4 checkouts fails at
+  the charge step (checkout `PlaceOrder` → `failed to charge card`), the payment-incident
+  story, without extra product-catalog/recommendation noise. Add more via `SCENARIOS`.
 - **`SCENARIOS=none`**: all failure flags stay off.
 - **`SCENARIOS="flag[=variant] ..."`**: exactly those flags. A bare flag → its `on`
   variant; `paymentFailure` bare → `25%`. Unknown flags/variants fail loudly with the
