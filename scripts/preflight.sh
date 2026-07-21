@@ -25,10 +25,11 @@ ensure() {
 ensure kind kind
 ensure kubectl kubectl
 ensure helm helm
+ensure jq jq
 
 if ! command -v envsubst >/dev/null 2>&1; then
   echo "Installing gettext (provides envsubst)..."
   brew install gettext
 fi
 
-echo "Preflight OK: docker running; kind, kubectl, helm, envsubst available."
+echo "Preflight OK: docker running; kind, kubectl, helm, envsubst, jq available."

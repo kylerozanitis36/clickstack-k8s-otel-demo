@@ -57,7 +57,7 @@ make status              # nodes + pods
 ### Repository layout
 ```
 .env(.example)            cluster + ClickHouse Cloud config (.env is gitignored)
-Makefile                  make up/down/status/kubeconfig + otel-up/otel-down/otel-status
+Makefile                  make up/down/status/kubeconfig + otel-up/otel-down/otel-status/otel-scenarios
 kind/cluster-config.yaml  kind cluster manifest (template)
 otel/                     OpenTelemetry Helm values:
   gateway-values.yaml       gateway → ClickHouse Cloud (the only egress)
@@ -104,6 +104,36 @@ make otel-up                  # gateway → agents → demo (idempotent)
 make otel-status              # all workloads
 make otel-down                # remove the pipeline (keeps the cluster)
 ```
+
+### Failure scenarios (always-on error patterns)
+
+The demo ships a Locust load generator (already running) plus a set of built-in
+failure scenarios controlled by [flagd](https://flagd.dev) feature flags — off by
+default. `make otel-up` turns a selectable set of them **on** so the pipeline
+continuously produces real error patterns (failing traces, error-rate spikes,
+correlated infra metrics) for a live, always-fresh demo.
+
+```bash
+make otel-up                                   # default: paymentFailure=25% (payment incident only)
+make otel-up SCENARIOS=none                     # clean/healthy demo, no failures
+make otel-up SCENARIOS="paymentFailure=50% kafkaQueueProblems=on"   # custom
+make otel-scenarios                             # list every flag + its variants
+```
+
+- **Default** (bare `make otel-up`): `paymentFailure=25%` — ~1 in 4 checkouts fails at
+  the charge step (checkout `PlaceOrder` → `failed to charge card`), the payment-incident
+  story, without extra product-catalog/recommendation noise. Add more via `SCENARIOS`.
+- **`SCENARIOS=none`**: all failure flags stay off.
+- **`SCENARIOS="flag[=variant] ..."`**: exactly those flags. A bare flag → its `on`
+  variant; `paymentFailure` bare → `25%`. Unknown flags/variants fail loudly with the
+  valid options. Run `make otel-scenarios` to see the catalog.
+
+> The demo chart bakes the flag catalog into a static file with no Helm override, so
+> `deploy-otel.sh` delta-patches the selection into its own `flagd-config-scenarios`
+> ConfigMap, which `flagd` mounts via a values override (leaving the chart's
+> `flagd-config` untouched to avoid a Helm field-ownership conflict), then restarts
+> `flagd` (which only reads the file at startup). Idempotent, and self-heals on chart
+> upgrades — it encodes only the selected delta, never a full copy.
 
 ### Option 2 — raw helm/kubectl
 Either path works — the scripts just codify these commands. With `.env` loaded
@@ -175,6 +205,18 @@ kubectl -n observability logs deploy/clickstack-gateway-opentelemetry-collector 
 - `otel/otel-demo-values.yaml` **nulls the demo collector's hostPorts** (the cluster
   agent already binds them) and **disables the flagd-ui sidecar** (it OOMs at 250Mi
   and isn't needed).
+- **Failure-scenario flags live in a static file baked into the demo chart** (no Helm
+  value overrides them), so `deploy-otel.sh` delta-patches the selection into its own
+  `flagd-config-scenarios` ConfigMap (flagd mounts it via a values override; the
+  chart's `flagd-config` is left alone to avoid a Helm field-ownership conflict) and
+  **restarts flagd** — flagd reads the flag file only at startup. See
+  [Failure scenarios](#failure-scenarios-always-on-error-patterns) and
+  `make otel-scenarios`.
+- **The Playwright browser-traffic Locust user is disabled**
+  (`LOCUST_BROWSER_TRAFFIC_ENABLED=false`). In demo image 2.2.0 it crashes on every task
+  (`'WebsiteBrowserUser' object has no attribute 'tracer'`, an upstream locustfile bug),
+  adding only 100%-failing noise. The API load user still drives all the
+  browse/cart/checkout traffic, so the failure scenarios above work as expected.
 
 ## Reproducibility check
 

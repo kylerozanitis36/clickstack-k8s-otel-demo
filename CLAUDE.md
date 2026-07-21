@@ -38,13 +38,59 @@ Design + plan: [docs/superpowers/specs/](docs/superpowers/specs/) and [docs/supe
 - **OTel Demo** (`otel-demo` ns) generates traces; its bundled collector forwards to the gateway.
 - Values files live in `otel/`: `gateway-values.yaml`, `k8s-daemonset-values.yaml`,
   `k8s-deployment-values.yaml`, `otel-demo-values.yaml` (template rendered with envsubst).
-  Commands: `make otel-up`/`otel-down`/`otel-status`.
+  Commands: `make otel-up`/`otel-down`/`otel-status`/`otel-scenarios`.
+
+### Failure scenarios (feature flags)
+`make otel-up` enables a selectable set of the demo's built-in failure scenarios
+(flagd feature flags) so the pipeline continuously emits real error patterns. The
+Locust load generator ships enabled by default; only the failure flags are toggled.
+- `make otel-up` → default `paymentFailure=25%` only (the checkout charge-failure /
+  `Failed to place order` incident, without extra product-catalog/recommendation noise).
+- `make otel-up SCENARIOS=none` → no failures (healthy demo).
+- `make otel-up SCENARIOS="flag[=variant] ..."` → exactly those flags (bare flag →
+  `on`, `paymentFailure` bare → `25%`); unknown flags/variants fail loudly.
+- `make otel-scenarios` → list the flag catalog + variants.
+- Mechanism: the demo chart bakes the flag catalog into a static file with **no Helm
+  override**, so `scripts/deploy-otel.sh` pulls the chart, delta-patches the selected
+  flags' `defaultVariant` into its **own** `flagd-config-scenarios` ConfigMap (flagd
+  mounts it via a `components.flagd.additionalVolumes` override in
+  `otel-demo-values.yaml`; the chart's own `flagd-config` is left untouched to avoid a
+  Helm server-side-apply field-ownership conflict), then — **only when the selection
+  changed vs the running cluster** — restarts flagd **and its flag-consuming services**.
+  flagd reads the flag file only at startup, and its consumers (product-catalog,
+  recommendation, payment, cart, …) hold their flagd connection and keep serving the
+  PREVIOUS flags if only flagd restarts, so both must roll for a scenario change to take
+  effect. A fresh install needs no restarts (Helm starts flagd + consumers together with
+  the right flags). Idempotent; self-heals on chart upgrades.
+  Design: [docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md](docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md).
+- **The ClickStack `remote-demo-data` walkthrough is not reproducible on this stock
+  demo.** Its `Visa cache full: cannot add new item` / `Failed to place order` incident
+  comes from ClickHouse's **fork** (`ClickHouse/opentelemetry-demo`, `paymentCacheLeak`
+  flag) captured into a pre-recorded dataset on `sql.clickhouse.com`. The upstream OTel
+  demo (any version, incl. `main`) instead throws `Payment request failed. Invalid
+  token. app.loyalty.level=gold`. To match the walkthrough live, self-host the ClickHouse
+  fork; otherwise adapt the walkthrough to the stock errors (checkout `PlaceOrder` →
+  `failed to charge card`).
 
 ### Gotchas (learned during setup)
 - Agent collector image tag **must match the helm chart's appVersion** (`0.154.0`); the
   `kubernetesAttributes` preset emits config keys older images reject (crash loop).
 - `otel/otel-demo-values.yaml` nulls the demo collector's hostPorts (the cluster `otel-agent`
   DaemonSet already binds them) and disables the flagd-ui sidecar (OOMs at 250Mi).
+- **Demo collector infra presets disabled** (`opentelemetry-collector.presets.hostMetrics/
+  kubeletMetrics/clusterMetrics: false`). The demo's bundled collector otherwise scrapes
+  host/kubelet/cluster metrics — redundant with our `otel-agent`/`otel-cluster` (double-
+  counted infra metrics) and its kubeletstats uses `${env:K8S_NODE_IP}:10250` with no
+  `insecure_skip_verify`, flooding logs with `cannot validate certificate … doesn't
+  contain any IP SANs` (kind's kubelet cert has no IP SANs). Disabling leaves the demo
+  collector forwarding only app telemetry to the gateway.
+- **Browser-traffic Locust user is disabled** (`LOCUST_BROWSER_TRAFFIC_ENABLED=false` via
+  `components.load-generator.envOverrides`). In demo image 2.2.0 it crashes on every task
+  (`AttributeError: 'WebsiteBrowserUser' object has no attribute 'tracer'`) — upstream
+  locustfile bug: `PlaywrightUser.__init__` shallow-copies the user into `sub_users` (which
+  run the tasks) *before* the subclass sets `self.tracer`. It's not config-fixable in the
+  image and only added 100%-failing noise; the API `WebsiteUser` reliably drives the
+  checkout/payment failures. Re-enabling needs a patched locustfile or a fixed image tag.
 
 ## Demo UI ingress (phase 3 — done)
 `make ingress-up` (run after `make otel-up`) exposes the OTel Demo storefront on
