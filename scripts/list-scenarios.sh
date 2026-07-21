@@ -17,6 +17,12 @@ helm pull open-telemetry/opentelemetry-demo --untar --untardir "$CHART_DIR" >/de
 FLAG_SRC="$CHART_DIR/opentelemetry-demo/flagd/demo.flagd.json"
 CHART_VER="$(grep '^version:' "$CHART_DIR/opentelemetry-demo/Chart.yaml" | awk '{print $2}')"
 
+# Merge fork-only flags (paymentCacheLeak, ...) so they show in the catalog too.
+if [ -f otel/flagd-extra-flags.json ]; then
+  jq -s '.[0].flags += .[1].flags | .[0]' "$FLAG_SRC" otel/flagd-extra-flags.json > "$CHART_DIR/merged.json"
+  FLAG_SRC="$CHART_DIR/merged.json"
+fi
+
 echo "Available failure-scenario flags (opentelemetry-demo chart $CHART_VER):"
 echo
 jq -r '
@@ -33,4 +39,7 @@ Usage:
 Notes:
   - A bare flag name resolves to its 'on' variant; paymentFailure bare -> 25%.
   - A flag without an 'on' variant must be given one explicitly (e.g. imageSlowLoad=5sec).
+  - paymentCacheLeak is the ClickStack "Visa cache full" incident. Selecting it also swaps
+    the payment + load-generator services to ClickHouse's demo-fork build (built locally and
+    loaded into kind on first use) — a bigger change than a normal flag toggle.
 EOF

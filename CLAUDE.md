@@ -49,7 +49,9 @@ Locust load generator ships enabled by default; only the failure flags are toggl
 - `make otel-up SCENARIOS=none` → no failures (healthy demo).
 - `make otel-up SCENARIOS="flag[=variant] ..."` → exactly those flags (bare flag →
   `on`, `paymentFailure` bare → `25%`); unknown flags/variants fail loudly.
-- `make otel-scenarios` → list the flag catalog + variants.
+- `make otel-up SCENARIOS=paymentCacheLeak` → the ClickStack **"Visa cache full"** payment
+  incident (see below). Composable, e.g. `SCENARIOS="paymentCacheLeak paymentFailure=25%"`.
+- `make otel-scenarios` → list the flag catalog + variants (incl. `paymentCacheLeak`).
 - Mechanism: the demo chart bakes the flag catalog into a static file with **no Helm
   override**, so `scripts/deploy-otel.sh` pulls the chart, delta-patches the selected
   flags' `defaultVariant` into its **own** `flagd-config-scenarios` ConfigMap (flagd
@@ -63,14 +65,29 @@ Locust load generator ships enabled by default; only the failure flags are toggl
   effect. A fresh install needs no restarts (Helm starts flagd + consumers together with
   the right flags). Idempotent; self-heals on chart upgrades.
   Design: [docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md](docs/superpowers/specs/2026-07-15-configurable-failure-scenarios-design.md).
-- **The ClickStack `remote-demo-data` walkthrough is not reproducible on this stock
-  demo.** Its `Visa cache full: cannot add new item` / `Failed to place order` incident
-  comes from ClickHouse's **fork** (`ClickHouse/opentelemetry-demo`, `paymentCacheLeak`
-  flag) captured into a pre-recorded dataset on `sql.clickhouse.com`. The upstream OTel
-  demo (any version, incl. `main`) instead throws `Payment request failed. Invalid
-  token. app.loyalty.level=gold`. To match the walkthrough live, self-host the ClickHouse
-  fork; otherwise adapt the walkthrough to the stock errors (checkout `PlaceOrder` →
-  `failed to charge card`).
+### "Visa cache full" scenario — `SCENARIOS=paymentCacheLeak`
+The ClickStack `remote-demo-data` walkthrough's `Visa cache full: cannot add new item` /
+`Failed to place order` incident exists **only in ClickHouse's demo fork**
+(`ClickHouse/opentelemetry-demo`), not the stock chart — upstream (any version, incl.
+`main`) instead throws `Payment request failed. Invalid token. app.loyalty.level=gold`.
+`make otel-up SCENARIOS=paymentCacheLeak` reproduces it **live** by swapping just two
+services to the fork build on top of the stock chart:
+- **What fires it:** the fork **payment** service (implements `visaValidationCache` +
+  the `paymentCacheLeak` flag; throws `Visa cache full…` once the cache reaches
+  `CACHE_SIZE`) plus the fork **load-generator** (sends random **distinct** Visa numbers
+  that fill the cache — the stock loadgen uses a fixed card and never would). flagd binary
+  and frontend stay stock.
+- **How it's built:** the fork's published images are amd64-only, so `deploy-otel.sh`
+  sparse-clones the pinned fork (`CLICKHOUSE_DEMO_FORK_REPO`/`_REF` in `.env`, defaulted),
+  `docker build`s the `payment` + `load-generator` images for the **host arch**, and
+  `kind load`s them (cached under `.cache/`; first run adds a few minutes). The
+  `paymentCacheLeak` flag def is merged in via `otel/flagd-extra-flags.json`; the image
+  overrides + `CACHE_SIZE` (default 10, via `VISA_CACHE_SIZE`) come from the
+  `otel/otel-demo-visa-cache-values.yaml` overlay (an extra `-f`, applied only for this
+  scenario).
+- **Note:** the cache needs enough distinct Visa checkouts to exceed `CACHE_SIZE` before
+  `Visa cache full` starts throwing — expect a minute or two of traffic.
+Design: [docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md](docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md).
 
 ### Gotchas (learned during setup)
 - Agent collector image tag **must match the helm chart's appVersion** (`0.154.0`); the

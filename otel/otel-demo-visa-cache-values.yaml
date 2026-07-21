@@ -1,0 +1,38 @@
+# =============================================================================
+# otel-demo-visa-cache-values.yaml — overlay for SCENARIOS=paymentCacheLeak
+# =============================================================================
+# Applied as an ADDITIONAL `-f` on top of otel-demo-values.yaml ONLY when the
+# paymentCacheLeak scenario is selected. It swaps just the payment + load-generator
+# services to ClickHouse's demo-fork build (locally built for this host arch and
+# `kind load`ed by scripts/deploy-otel.sh) — the only two services needed for the
+# "Visa cache full: cannot add new item." incident:
+#   - payment       : implements the visaValidationCache + paymentCacheLeak flag.
+#   - load-generator: sends random DISTINCT Visa numbers so the cache actually fills
+#                     (the stock load generator uses a fixed card and never would).
+# Everything else stays stock. This is a TEMPLATE rendered with envsubst before use.
+# =============================================================================
+
+# Locally-built images are loaded straight into the kind nodes, so never try to pull
+# them from a registry.
+default:
+  image:
+    pullPolicy: IfNotPresent
+
+components:
+  payment:
+    imageOverride:
+      repository: "${VISA_PAYMENT_REPO}"
+      tag: "${VISA_IMAGE_TAG}"
+    # Small cache so it fills within a minute or two of distinct-Visa checkout traffic
+    # (default in the fork is 1000). Tune via VISA_CACHE_SIZE in the environment.
+    envOverrides:
+      - name: CACHE_SIZE
+        value: "${VISA_CACHE_SIZE}"
+
+  load-generator:
+    imageOverride:
+      repository: "${VISA_LOADGEN_REPO}"
+      tag: "${VISA_IMAGE_TAG}"
+    # NOTE: browser-traffic-off (LOCUST_BROWSER_TRAFFIC_ENABLED=false) is set via
+    # load-generator.envOverrides in the base values; imageOverride is a separate key,
+    # so Helm deep-merges and that setting is preserved.
