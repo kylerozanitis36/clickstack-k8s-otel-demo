@@ -1,0 +1,14 @@
+{
+  "_comment": "Feature flags that exist only in ClickHouse's OTel demo FORK, not the stock chart's flag catalog. scripts/deploy-otel.sh merges these into the flag catalog so they become selectable via SCENARIOS. A flag here only DOES something if the service that reads it is also the fork build (e.g. paymentCacheLeak needs the fork payment image — deploy-otel.sh handles that image swap when the flag is selected).",
+  "flags": {
+    "paymentCacheLeak": {
+      "description": "Payment service Visa validation cache leak (fills to CACHE_SIZE, then 'Visa cache full: cannot add new item.'). Requires the ClickHouse-fork payment + load-generator images, which deploy-otel.sh builds and loads automatically when this flag is selected.",
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    }
+  }
+}

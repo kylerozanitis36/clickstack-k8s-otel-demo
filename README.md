@@ -117,6 +117,7 @@ correlated infra metrics) for a live, always-fresh demo.
 make otel-up                                   # default: paymentFailure=25% (payment incident only)
 make otel-up SCENARIOS=none                     # clean/healthy demo, no failures
 make otel-up SCENARIOS="paymentFailure=50% kafkaQueueProblems=on"   # custom
+make otel-up SCENARIOS=paymentCacheLeak         # ClickStack "Visa cache full" incident
 make otel-scenarios                             # list every flag + its variants
 ```
 
@@ -127,6 +128,21 @@ make otel-scenarios                             # list every flag + its variants
 - **`SCENARIOS="flag[=variant] ..."`**: exactly those flags. A bare flag → its `on`
   variant; `paymentFailure` bare → `25%`. Unknown flags/variants fail loudly with the
   valid options. Run `make otel-scenarios` to see the catalog.
+
+#### The "Visa cache full" incident (`SCENARIOS=paymentCacheLeak`)
+
+This reproduces the exact incident from the ClickStack
+[remote demo walkthrough](https://clickhouse.com/docs/use-cases/observability/clickstack/getting-started/remote-demo-data)
+(`Visa cache full: cannot add new item.` → `Failed to place order`) **live in your own
+cluster**. That scenario exists only in ClickHouse's demo *fork*, not the stock chart, so
+selecting it swaps just two services (`payment` + `load-generator`) to the fork build on
+top of the stock chart. Because the fork's published images are amd64-only, `deploy-otel.sh`
+builds them locally for your architecture and loads them into kind (cached under `.cache/`;
+first run takes a few extra minutes). It needs a minute or two of distinct-Visa checkout
+traffic to fill the cache (`CACHE_SIZE`, default 10, tunable via `VISA_CACHE_SIZE`) before
+`Visa cache full` starts throwing. Composable, e.g.
+`SCENARIOS="paymentCacheLeak paymentFailure=25%"`. Pin the fork via
+`CLICKHOUSE_DEMO_FORK_REF` in `.env`.
 
 > The demo chart bakes the flag catalog into a static file with no Helm override, so
 > `deploy-otel.sh` delta-patches the selection into its own `flagd-config-scenarios`
