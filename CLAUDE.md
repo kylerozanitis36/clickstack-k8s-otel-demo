@@ -21,6 +21,10 @@ by Docker Desktop. Topology: 1 control-plane + 2 workers, so node-level telemetr
 ### Common commands
 - `cp .env.example .env` — one-time setup (`.env` is gitignored).
 - `make up` / `make down` / `make recreate` — create / delete / rebuild the cluster (idempotent).
+- `make pause` / `make resume` — stop / start the kind node containers to suspend the
+  cluster without deleting it (state preserved; workloads self-heal on resume). Scripts:
+  `scripts/pause-cluster.sh` / `scripts/resume-cluster.sh` (identify nodes via the
+  `io.x-k8s.kind.cluster=$CLUSTER_NAME` Docker label).
 - `make status` — show nodes and all pods.
 - `eval "$(make -s kubeconfig)"` — point kubectl at this cluster.
 - Prerequisites: Docker Desktop running, Homebrew. `make up` installs `kind`/`helm`/`gettext` if missing.

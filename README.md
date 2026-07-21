@@ -42,8 +42,23 @@ make status              # nodes + pods
 | `make up`         | Create the cluster (idempotent)              |
 | `make down`       | Delete the cluster                           |
 | `make recreate`   | Tear down and rebuild from scratch           |
+| `make pause`      | Pause the cluster (stop nodes; state kept)   |
+| `make resume`     | Resume a paused cluster                      |
 | `make status`     | Show nodes and all pods                      |
 | `make kubeconfig` | Print the `export KUBECONFIG=...` line       |
+
+### Pause / resume
+
+To stop the cluster without tearing it down (e.g. to free CPU/RAM or step away),
+`make pause` stops the kind node containers; all cluster and workload state is preserved
+on disk. `make resume` starts them again and waits for the nodes to come back `Ready` —
+your OTel pipeline and demo self-heal (pods restart) and telemetry resumes on its own, no
+`make otel-up` needed. This is far faster than `make recreate`, which rebuilds from scratch.
+
+```bash
+make pause     # stop node containers (kubectl / localhost:8080 go offline)
+make resume    # start them, wait for Ready; workloads come back automatically
+```
 
 ## How it works
 
@@ -57,7 +72,7 @@ make status              # nodes + pods
 ### Repository layout
 ```
 .env(.example)            cluster + ClickHouse Cloud config (.env is gitignored)
-Makefile                  make up/down/status/kubeconfig + otel-up/otel-down/otel-status/otel-scenarios
+Makefile                  make up/down/recreate/pause/resume/status/kubeconfig + otel-up/otel-down/otel-status/otel-scenarios
 kind/cluster-config.yaml  kind cluster manifest (template)
 otel/                     OpenTelemetry Helm values:
   gateway-values.yaml       gateway → ClickHouse Cloud (the only egress)
@@ -65,7 +80,7 @@ otel/                     OpenTelemetry Helm values:
   k8s-deployment-values.yaml single agent: k8s events + cluster metrics
   otel-demo-values.yaml      OTel Demo, routed to the gateway (envsubst template)
 ingress/frontend-ingress.yaml  Ingress exposing the demo UI on localhost:8080
-scripts/                  create/delete cluster + deploy/teardown OTel + ingress
+scripts/                  create/delete/pause/resume cluster + deploy/teardown OTel + ingress
 docs/superpowers/         design spec + implementation plan
 ```
 

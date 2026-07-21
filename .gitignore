@@ -18,3 +18,6 @@ kind/.cluster-config.rendered.yaml
 
 # macOS
 .DS_Store
+
+# Local build cache (e.g. the ClickHouse demo-fork checkout for the Visa-cache scenario)
+.cache/
