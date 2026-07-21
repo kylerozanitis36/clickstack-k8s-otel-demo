@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down recreate status kubeconfig otel-up otel-down otel-status otel-scenarios ingress-up ingress-down ingress-status
+.PHONY: help up down recreate pause resume status kubeconfig otel-up otel-down otel-status otel-scenarios ingress-up ingress-down ingress-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -14,6 +14,12 @@ down: ## Delete the local kind cluster
 	@scripts/delete-cluster.sh
 
 recreate: down up ## Tear down and rebuild the cluster from scratch
+
+pause: ## Pause the cluster (stop node containers; state preserved). Resume with make resume
+	@scripts/pause-cluster.sh
+
+resume: ## Resume a paused cluster (start node containers, wait for Ready)
+	@scripts/resume-cluster.sh
 
 status: ## Show nodes and all pods
 	@kubectl get nodes -o wide && echo && kubectl get pods -A
