@@ -2,13 +2,14 @@
 # otel-demo-visa-cache-values.yaml — overlay for SCENARIOS=paymentCacheLeak
 # =============================================================================
 # Applied as an ADDITIONAL `-f` on top of otel-demo-values.yaml ONLY when the
-# paymentCacheLeak scenario is selected. It swaps just the payment + load-generator
-# services to ClickHouse's demo-fork build (locally built for this host arch and
-# `kind load`ed by scripts/deploy-otel.sh) — the only two services needed for the
-# "Visa cache full: cannot add new item." incident:
+# paymentCacheLeak scenario is selected. It swaps three services to ClickHouse's demo-fork
+# build (locally built for this host arch and `kind load`ed by scripts/deploy-otel.sh) —
+# the ones needed for the "Visa cache full: cannot add new item." incident:
 #   - payment       : implements the visaValidationCache + paymentCacheLeak flag.
 #   - load-generator: sends random DISTINCT Visa numbers so the cache actually fills
 #                     (the stock load generator uses a fixed card and never would).
+#   - frontend      : logs "Failed to place order" on checkout failure (the stock
+#                     frontend has no such log) — the walkthrough's step-6 error cluster.
 # Everything else stays stock. This is a TEMPLATE rendered with envsubst before use.
 # =============================================================================
 
@@ -28,6 +29,11 @@ components:
     envOverrides:
       - name: CACHE_SIZE
         value: "${VISA_CACHE_SIZE}"
+    # KNOWN LIMITATION: the fork Node payment (@hyperdx/node-opentelemetry) does not export
+    # its observable gauge `visa_validation_cache.size` here — no Node app-metric scope
+    # reaches ClickHouse even with OTEL_METRICS_EXPORTER=otlp — so walkthrough step 13's
+    # cache-size chart has no series. Steps 1-12 and the metrics *source* (infra + kafka +
+    # postgres + Java app metrics) work. Tracked as a follow-up issue.
 
   load-generator:
     imageOverride:
@@ -36,3 +42,12 @@ components:
     # NOTE: browser-traffic-off (LOCUST_BROWSER_TRAFFIC_ENABLED=false) is set via
     # load-generator.envOverrides in the base values; imageOverride is a separate key,
     # so Helm deep-merges and that setting is preserved.
+
+  frontend:
+    imageOverride:
+      repository: "${VISA_FRONTEND_REPO}"
+      tag: "${VISA_IMAGE_TAG}"
+    # Server-side only for now: the fork frontend also ships the HyperDX browser SDK, but
+    # driving browser/RUM sessions (walkthrough steps 14-15) needs real browser traffic and
+    # a Sessions source — tracked as a follow-up. The "Failed to place order" server log
+    # flows via the normal OTLP path with no extra config.

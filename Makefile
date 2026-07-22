@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down recreate pause resume status kubeconfig otel-up otel-down otel-status otel-scenarios ingress-up ingress-down ingress-status
+.PHONY: help up down recreate pause resume status kubeconfig otel-up otel-down otel-status otel-scenarios hyperdx-sources ingress-up ingress-down ingress-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -38,6 +38,9 @@ otel-status: ## Show OTel/demo workloads
 
 otel-scenarios: ## List available failure-scenario flags + variants for SCENARIOS
 	@scripts/list-scenarios.sh
+
+hyperdx-sources: ## Configure/print the HyperDX Logs/Traces/Metrics/Sessions sources (pass --apply to attempt via API)
+	@scripts/configure-hyperdx-sources.sh $(if $(APPLY),--apply,)
 
 ingress-up: ## Expose the OTel Demo UI on http://localhost:8080 (run after otel-up)
 	@scripts/deploy-ingress.sh

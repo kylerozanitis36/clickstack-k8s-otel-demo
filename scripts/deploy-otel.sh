@@ -168,39 +168,43 @@ kubectl create configmap flagd-config-scenarios -n otel-demo \
 ENVSUBST="$(command -v envsubst || echo "$(brew --prefix gettext)/bin/envsubst")"
 "$ENVSUBST" '${OTEL_GATEWAY_ENDPOINT}' < otel/otel-demo-values.yaml > otel/.otel-demo-values.rendered.yaml
 
-# Visa-cache scenario: the fork's payment + load-generator images are the only two services
-# that make "Visa cache full: cannot add new item." fire (payment implements the cache +
-# paymentCacheLeak flag; the fork loadgen sends distinct Visa numbers that fill it). Their
-# published images are amd64-only, so build them locally for THIS host arch and load into
-# kind, then render the image-override overlay. Skipped entirely unless paymentCacheLeak
-# was selected.
+# Visa-cache scenario: swap three services to the fork build — the only ones that make the
+# ClickStack walkthrough's incident appear. payment implements the visaValidationCache +
+# paymentCacheLeak flag; the fork load-generator sends distinct Visa numbers that fill it;
+# the fork frontend logs "Failed to place order" on checkout failure (the stock frontend has
+# no such log). The fork's published images are amd64-only, so build them locally for THIS
+# host arch and load into kind, then render the image-override overlay. Skipped entirely
+# unless paymentCacheLeak was selected.
 if [ "$VISA_CACHE" = "1" ]; then
   VISA_IMAGE_TAG="$CLICKHOUSE_DEMO_FORK_REF"
   VISA_PAYMENT_REPO="clickstack-visa-demo/payment"
   VISA_LOADGEN_REPO="clickstack-visa-demo/load-generator"
+  VISA_FRONTEND_REPO="clickstack-visa-demo/frontend"
   pay_img="${VISA_PAYMENT_REPO}:${VISA_IMAGE_TAG}"
   lg_img="${VISA_LOADGEN_REPO}:${VISA_IMAGE_TAG}"
+  fe_img="${VISA_FRONTEND_REPO}:${VISA_IMAGE_TAG}"
 
-  if docker image inspect "$pay_img" "$lg_img" >/dev/null 2>&1; then
+  if docker image inspect "$pay_img" "$lg_img" "$fe_img" >/dev/null 2>&1; then
     echo "ClickHouse-fork images already built for ref ${VISA_IMAGE_TAG:0:12}; skipping build."
   else
-    echo "Building ClickHouse-fork payment + load-generator images ($(uname -m), ref ${VISA_IMAGE_TAG:0:12})..."
+    echo "Building ClickHouse-fork payment + load-generator + frontend images ($(uname -m), ref ${VISA_IMAGE_TAG:0:12})..."
     FORK_DIR=".cache/clickhouse-otel-demo"
     rm -rf "$FORK_DIR"; mkdir -p "$FORK_DIR"
     git -C "$FORK_DIR" init -q
     git -C "$FORK_DIR" remote add origin "$CLICKHOUSE_DEMO_FORK_REPO"
     git -C "$FORK_DIR" config core.sparseCheckout true
-    printf '%s\n' 'pb/' 'src/payment/' 'src/load-generator/' > "$FORK_DIR/.git/info/sparse-checkout"
+    printf '%s\n' 'pb/' 'src/payment/' 'src/load-generator/' 'src/frontend/' > "$FORK_DIR/.git/info/sparse-checkout"
     git -C "$FORK_DIR" fetch -q --depth 1 origin "$CLICKHOUSE_DEMO_FORK_REF"
     git -C "$FORK_DIR" checkout -q FETCH_HEAD
     docker build -q -f "$FORK_DIR/src/payment/Dockerfile"        -t "$pay_img" "$FORK_DIR" >/dev/null
     docker build -q -f "$FORK_DIR/src/load-generator/Dockerfile" -t "$lg_img"  "$FORK_DIR" >/dev/null
+    docker build -q -f "$FORK_DIR/src/frontend/Dockerfile"       -t "$fe_img"  "$FORK_DIR" >/dev/null
   fi
   echo "Loading fork images into kind cluster '${CLUSTER_NAME:-clickstack-local}'..."
-  kind load docker-image "$pay_img" "$lg_img" --name "${CLUSTER_NAME:-clickstack-local}" >/dev/null
+  kind load docker-image "$pay_img" "$lg_img" "$fe_img" --name "${CLUSTER_NAME:-clickstack-local}" >/dev/null
 
-  export VISA_PAYMENT_REPO VISA_LOADGEN_REPO VISA_IMAGE_TAG VISA_CACHE_SIZE
-  "$ENVSUBST" '${VISA_PAYMENT_REPO} ${VISA_LOADGEN_REPO} ${VISA_IMAGE_TAG} ${VISA_CACHE_SIZE}' \
+  export VISA_PAYMENT_REPO VISA_LOADGEN_REPO VISA_FRONTEND_REPO VISA_IMAGE_TAG VISA_CACHE_SIZE
+  "$ENVSUBST" '${VISA_PAYMENT_REPO} ${VISA_LOADGEN_REPO} ${VISA_FRONTEND_REPO} ${VISA_IMAGE_TAG} ${VISA_CACHE_SIZE}' \
     < otel/otel-demo-visa-cache-values.yaml > otel/.otel-demo-visa-cache-values.rendered.yaml
 fi
 
