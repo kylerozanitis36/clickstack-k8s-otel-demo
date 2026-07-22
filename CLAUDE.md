@@ -104,9 +104,13 @@ sources are configured. Steps 1–13 are covered by:
 1. `make otel-up SCENARIOS=paymentCacheLeak` (fork payment/loadgen/frontend → the incident +
    the `visa_validation_cache.size` gauge + the `Failed to place order` log).
 2. `make hyperdx-sources` — configures/prints the Logs/Traces/Metrics/Sessions sources
-   (`scripts/configure-hyperdx-sources.sh`; `--apply`/`APPLY=1` attempts the HyperDX API,
-   else prints exact values for Team Settings → Sources). The HyperDX source-**create** API
-   isn't in the published OpenAPI spec, so the UI steps (README) are the verified path.
+   (`scripts/configure-hyperdx-sources.sh`). For **Managed ClickStack** it uses the
+   **ClickHouse Cloud API** (`api.clickhouse.cloud/v1/.../clickstack/sources`, Basic auth
+   with a Cloud API key; `.env`: `CLICKHOUSE_CLOUD_ORG_ID`/`_SERVICE_ID`/`_API_KEY_ID`/
+   `_API_KEY_SECRET`) with `APPLY=1`; else it prints exact values for Team Settings →
+   Sources. The Cloud source-**create** endpoints are **Beta**, so the UI steps (README)
+   are the verified path. (Self-hosted HyperDX uses a different API — Bearer + `:8000/api/v2`
+   — not what this script targets.)
 Session replay (steps 14–15) needs browser RUM and is tracked as a GitHub issue.
 Design: [docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md](docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md).
 

@@ -42,10 +42,15 @@ Builds on the merged `paymentCacheLeak` scenario (PR #4).
   SDK left unconfigured for Core; the `Failed to place order` **server** log flows via the
   normal OTLP path.)
 - `scripts/configure-hyperdx-sources.sh` (new) + `make hyperdx-sources` — checks ClickHouse
-  readiness (table row counts), prints the exact source settings, and (with `--apply`/`APPLY=1`
-  + `HYPERDX_API_URL`/`HYPERDX_API_KEY`) best-effort-creates the Logs/Traces/Metrics/Sessions
-  sources via the HyperDX External API, reusing an existing ClickHouse connection.
-- `.env.example` — optional `HYPERDX_API_URL` + `HYPERDX_API_KEY` (Personal API key).
+  readiness (table row counts), prints the exact source settings, and (with `APPLY=1`)
+  best-effort-creates the Logs/Traces/Metrics/Sessions sources for **Managed ClickStack** via
+  the **ClickHouse Cloud API** (`api.clickhouse.cloud/v1/organizations/<org>/services/
+  <svc>/clickstack/sources`, HTTP Basic auth with a Cloud API key), reusing an existing
+  ClickHouse connection and wiring log→trace correlation (`traceSourceId`). The Cloud
+  source-create endpoints are **Beta**, so the UI (Team Settings → Sources) is the verified
+  fallback.
+- `.env.example` — optional `CLICKHOUSE_CLOUD_ORG_ID` / `_SERVICE_ID` / `_API_KEY_ID` /
+  `_API_KEY_SECRET` (Cloud API key).
 - Docs — README "Replicate the ClickStack walkthrough" (deploy → sources → UI source table →
   step mapping; sessions caveat) + CLAUDE.md; this spec.
 - GitHub issue — session replay (steps 14–15): browser RUM (fork frontend browser SDK +

@@ -182,8 +182,9 @@ required to follow it against **your own** stack (steps 1–13):
 ```bash
 make otel-up SCENARIOS=paymentCacheLeak      # fork payment + load-generator + frontend
 ```
-This produces the `Failed to place order` frontend log (step 6), the failing checkout
-**traces** (step 8), and the `visa_validation_cache.size` gauge **metric** (step 13).
+This produces the `Failed to place order` frontend log (step 6) and the failing checkout
+**traces** (step 8). (The infra **metrics** for steps 7/10 are already collected; the
+step-13 cache gauge is a [known limitation](#known-limitations-tracked-as-github-issues).)
 
 **2. Configure the HyperDX sources** — the ClickStack collector auto-creates the ClickHouse
 *tables*, but HyperDX *sources* (which point HyperDX at those tables and correlate them) are
@@ -191,12 +192,15 @@ This produces the `Failed to place order` frontend log (step 6), the failing che
 are missing until you configure them.
 ```bash
 make hyperdx-sources                          # prints readiness + exact source settings
-make hyperdx-sources APPLY=1                   # also attempts to create them via the HyperDX API
+make hyperdx-sources APPLY=1                   # also attempts to create them via the Cloud API
 ```
-`APPLY=1` needs `HYPERDX_API_URL` + `HYPERDX_API_KEY` (a **Personal** API key from
-ClickStack → Team Settings → API Keys) in `.env`. The HyperDX source-**create** API isn't in
-the published spec, so if `APPLY` doesn't create them, configure them by hand (the reliable
-path) in **Team Settings → Sources**, all pointing at your `default` database:
+For **Managed ClickStack** (ClickHouse Cloud), `APPLY=1` uses the ClickHouse Cloud API
+(`https://api.clickhouse.cloud/v1/organizations/<ORG>/services/<SERVICE>/clickstack/...`,
+HTTP Basic auth). Set in `.env`: `CLICKHOUSE_CLOUD_ORG_ID`, `CLICKHOUSE_CLOUD_SERVICE_ID`,
+and a Cloud API key (`CLICKHOUSE_CLOUD_API_KEY_ID` / `_SECRET` from **Organization settings →
+API keys**, needing the *Manage ClickStack API* permission). The source-**create** endpoints
+are **Beta**, so if `APPLY` doesn't create them, configure them by hand (the reliable path) in
+the hosted HyperDX UI → **Team Settings → Sources**, all pointing at your `default` database:
 
 | Source | Kind | Table(s) | Key fields |
 |--------|------|----------|-----------|
