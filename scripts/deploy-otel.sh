@@ -17,6 +17,19 @@ CLICKHOUSE_DEMO_FORK_REPO="${CLICKHOUSE_DEMO_FORK_REPO:-https://github.com/Click
 CLICKHOUSE_DEMO_FORK_REF="${CLICKHOUSE_DEMO_FORK_REF:-15969bb3fc531e6d88fb4071e3fc97f16d3e6834}"
 VISA_CACHE_SIZE="${VISA_CACHE_SIZE:-10}"
 
+# Pin the OTel Demo chart. Unpinned, `helm pull` floats to the newest chart, which silently
+# breaks this repo's assumptions across major demo releases. Concretely, chart 0.41.0
+# (appVersion 3.0.0):
+#   - renamed the collector's `spanmetrics` connector to `span_metrics`, so our re-listed
+#     traces exporter crash-loops the demo collector ("references exporter "spanmetrics"
+#     which is not configured"), and
+#   - replaced the Locust load generator with k6, so the ClickHouse-fork (Locust-based)
+#     load-generator image runs but generates NO traffic — the paymentCacheLeak incident
+#     never fires, and LOCUST_BROWSER_TRAFFIC_ENABLED becomes a no-op.
+# 0.40.10 is the last chart with appVersion 2.2.0, which is what the fork images and the
+# values/gotchas in CLAUDE.md are written against. Override via .env if you know why.
+DEMO_CHART_VERSION="${DEMO_CHART_VERSION:-0.40.10}"
+
 scripts/preflight.sh   # ensures docker/kind/kubectl/helm/envsubst/jq/git
 
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null 2>&1 || true
@@ -43,7 +56,7 @@ DEFAULT_SCENARIOS="paymentFailure=25%"
 
 CHART_DIR="$(mktemp -d)"
 trap 'rm -rf "$CHART_DIR"' EXIT
-helm pull open-telemetry/opentelemetry-demo --untar --untardir "$CHART_DIR" >/dev/null
+helm pull open-telemetry/opentelemetry-demo --version "$DEMO_CHART_VERSION" --untar --untardir "$CHART_DIR" >/dev/null
 DEMO_CHART="$CHART_DIR/opentelemetry-demo"
 FLAG_SRC="$DEMO_CHART/flagd/demo.flagd.json"
 

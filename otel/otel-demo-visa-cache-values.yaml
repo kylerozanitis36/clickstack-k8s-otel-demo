@@ -49,5 +49,34 @@ components:
       tag: "${VISA_IMAGE_TAG}"
     # Server-side only for now: the fork frontend also ships the HyperDX browser SDK, but
     # driving browser/RUM sessions (walkthrough steps 14-15) needs real browser traffic and
-    # a Sessions source — tracked as a follow-up. The "Failed to place order" server log
-    # flows via the normal OTLP path with no extra config.
+    # a Sessions source — tracked as a follow-up.
+    #
+    # These three env vars are what make walkthrough step 8 work — clicking through from the
+    # `Failed to place order` log to its trace. Without them the log arrives with an EMPTY
+    # TraceId, so HyperDX has nothing to correlate and shows no Trace button. Why:
+    #
+    #  1. HYPERDX_API_KEY — the fork frontend instruments itself with HyperDX.init()
+    #     (utils/telemetry/Instrumentation.js, loaded via `node --require`). That call
+    #     HARD-RETURNS unless an api key is present, printing:
+    #        "apiKey or HYPERDX_API_KEY or OTEL_EXPORTER_OTLP_HEADERS is not set"
+    #        "OpenTelemetry SDK initialization skipped"
+    #     so the tracing SDK, auto-instrumentation and context manager never start: the
+    #     frontend emits NO spans, and its logs therefore carry no trace context. The key is
+    #     only ever sent as an `Authorization` header, and we export to our OWN collector,
+    #     which doesn't authenticate — so any non-empty value works. (The winston->OTLP log
+    #     transport in utils/logger.js is built directly and works without init(), which is
+    #     why logs appeared while traces did not.)
+    #  2/3. OTEL_EXPORTER_OTLP_{TRACES,LOGS}_ENDPOINT — the HyperDX SDK exports over OTLP
+    #     *HTTP* and builds its URL as "${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/{traces,logs}".
+    #     The chart sets that base to the collector's *gRPC* port (:4317), so the SDK would
+    #     POST HTTP at a gRPC listener and every export fails. These signal-specific vars
+    #     take precedence (see the SDK's constants.js), so we point them at the collector's
+    #     OTLP/HTTP port (:4318) while leaving the chart's :4317 base alone for everything
+    #     else. $(OTEL_COLLECTOR_NAME) is k8s env interpolation, resolved by kubelet.
+    envOverrides:
+      - name: HYPERDX_API_KEY
+        value: "local-collector-no-auth-required"
+      - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/traces"
+      - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/logs"
