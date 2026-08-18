@@ -76,7 +76,6 @@ fi
 echo "$SOURCES_JSON" | jq -r '(.result // .)[]? | "  - \(.name) (kind=\(.kind))"' 2>/dev/null || echo "  (none)"
 
 src_id()  { echo "$SOURCES_JSON" | jq -r --arg n "$1" '(.result // .)[]? | select(.name==$n) | .id' 2>/dev/null | head -1; }
-has_src() { [ -n "$(src_id "$1")" ]; }
 
 # Reuse an existing ClickHouse connection, else (with --apply) create one.
 CONNS_JSON="$(cc "$API/connections" 2>/dev/null || echo '{}')"
@@ -88,31 +87,94 @@ if [ -z "$CONN_ID" ] && [ "$APPLY" = "1" ]; then
   [ -n "$CONN_ID" ] && echo "  created ClickHouse connection ($CONN_ID)"
 fi
 
-# create_source <name> <extra-json>  (kind/from/expressions live in extra-json); echoes new id
+# create_source <name> <extra-json>
+#   <extra-json> carries kind/from/expressions and MUST be strict JSON (quoted keys): it is
+#   merged into the request body with `jq --argjson`, which rejects jq-style object literals
+#   with bare keys. Build payloads with `jq -n` (below) rather than hand-writing them — that
+#   keeps bare keys in jq *program* position, where they're legal, and emits strict JSON.
+#
+#   Progress/diagnostics go to STDERR; only the source id goes to STDOUT, so a caller can do
+#   id="$(create_source ...)" and capture the id alone. (Previously every message went to
+#   stdout, so callers had to `| tail -1` and sniff the text to tell an id from a message.)
 create_source() {
-  local name="$1" extra="$2"
-  if has_src "$name"; then echo "  source '$name' already exists ($(src_id "$name"))"; src_id "$name"; return; fi
-  if [ "$APPLY" != "1" ]; then echo "  source '$name' missing — rerun with --apply (or use the UI)"; return; fi
-  [ -n "$CONN_ID" ] || { echo "  no connection id — create sources in the UI"; return; }
-  local body resp id
-  body="$(jq -n --arg n "$name" --arg c "$CONN_ID" --argjson x "$extra" '{name:$n, connection:$c} * $x')"
+  local name="$1" extra="$2" existing body resp id
+  existing="$(src_id "$name")"
+  if [ -n "$existing" ]; then
+    echo "  source '$name' already exists ($existing)" >&2
+    printf '%s\n' "$existing"
+    return 0
+  fi
+  if [ "$APPLY" != "1" ]; then
+    echo "  source '$name' missing — rerun with APPLY=1 (or use the UI)" >&2; return 0
+  fi
+  [ -n "$CONN_ID" ] || { echo "  no ClickHouse connection id — create sources in the UI" >&2; return 0; }
+
+  # Fail LOUDLY on a malformed payload. Without this, the jq below fails, `body` is left
+  # EMPTY, and we then POST an empty body and blame the (Beta) API for what is really a
+  # local quoting bug.
+  if ! jq empty <<<"$extra" 2>/dev/null; then
+    echo "  BUG: payload for source '$name' is not valid JSON (object keys must be quoted):" >&2
+    echo "    $extra" >&2
+    return 1
+  fi
+  if ! body="$(jq -n --arg n "$name" --arg c "$CONN_ID" --argjson x "$extra" \
+                    '{name:$n, connection:$c} * $x')"; then
+    echo "  BUG: could not build the request body for source '$name'" >&2
+    return 1
+  fi
+
   resp="$(cc -X POST "$API/sources" -d "$body" || true)"
-  id="$(echo "$resp" | jq -r '.result.id // .id // empty' 2>/dev/null)"
-  if [ -n "$id" ]; then echo "  created source '$name' ($id)"; echo "$id"; else
-    echo "  could NOT create '$name' via API (Beta endpoint / schema) — use the UI. Resp: $(echo "$resp" | head -c 200)" >&2; fi
+  id="$(jq -r '.result.id // .id // empty' <<<"$resp" 2>/dev/null || true)"
+  if [ -n "$id" ]; then
+    echo "  created source '$name' ($id)" >&2
+    printf '%s\n' "$id"
+  else
+    echo "  could NOT create '$name' via the API (Beta endpoint / schema) — use the UI." >&2
+    echo "    request:  $body" >&2
+    echo "    response: $(head -c 200 <<<"$resp")" >&2
+  fi
+  return 0
 }
 
 echo
 echo "=== Ensuring the four sources (Beta create API; best-effort) ==="
+TRACE_PAYLOAD="$(jq -n --arg db "$DB" '{
+  kind: "trace",
+  from: { databaseName: $db, tableName: "otel_traces" },
+  timestampValueExpression: "Timestamp",
+  traceIdExpression: "TraceId",
+  spanIdExpression: "SpanId"
+}')"
+METRIC_PAYLOAD="$(jq -n --arg db "$DB" '{
+  kind: "metric",
+  from: { databaseName: $db },
+  metricTables: { gauge: "otel_metrics_gauge", sum: "otel_metrics_sum", histogram: "otel_metrics_histogram" }
+}')"
+SESSION_PAYLOAD="$(jq -n --arg db "$DB" '{
+  kind: "session",
+  from: { databaseName: $db, tableName: "hyperdx_sessions" },
+  timestampValueExpression: "TimestampTime"
+}')"
+LOG_PAYLOAD="$(jq -n --arg db "$DB" '{
+  kind: "log",
+  from: { databaseName: $db, tableName: "otel_logs" },
+  timestampValueExpression: "Timestamp",
+  traceIdExpression: "TraceId",
+  spanIdExpression: "SpanId"
+}')"
+
 # Create Traces first so the Logs source can reference it for the log->trace correlation.
-TRACE_ID="$(create_source "Traces"  '{kind:"trace", from:{databaseName:"'"$DB"'", tableName:"otel_traces"}, timestampValueExpression:"Timestamp", traceIdExpression:"TraceId", spanIdExpression:"SpanId"}' | tail -1)"
-create_source "Metrics"  '{kind:"metric", from:{databaseName:"'"$DB"'"}, metricTables:{gauge:"otel_metrics_gauge", sum:"otel_metrics_sum", histogram:"otel_metrics_histogram"}}' >/dev/null
-create_source "Sessions" '{kind:"session", from:{databaseName:"'"$DB"'", tableName:"hyperdx_sessions"}, timestampValueExpression:"TimestampTime"}' >/dev/null
-LOG_EXTRA='{kind:"log", from:{databaseName:"'"$DB"'", tableName:"otel_logs"}, timestampValueExpression:"Timestamp", traceIdExpression:"TraceId", spanIdExpression:"SpanId"}'
-if [ -n "${TRACE_ID:-}" ] && echo "$TRACE_ID" | grep -qvE 'source|missing|could'; then
-  LOG_EXTRA="$(jq -c --arg t "$TRACE_ID" '. + {traceSourceId:$t}' <<<"$LOG_EXTRA")"  # log->trace correlation
+# create_source prints only the id on stdout, so this captures the id and nothing else.
+TRACE_ID="$(create_source "Traces" "$TRACE_PAYLOAD")"
+create_source "Metrics"  "$METRIC_PAYLOAD"  >/dev/null
+create_source "Sessions" "$SESSION_PAYLOAD" >/dev/null
+if [ -n "${TRACE_ID:-}" ]; then
+  LOG_PAYLOAD="$(jq -c --arg t "$TRACE_ID" '. + {traceSourceId:$t}' <<<"$LOG_PAYLOAD")"
+else
+  echo "  no Traces source id — creating Logs WITHOUT the log->trace correlation;" >&2
+  echo "  set the Logs source's 'Correlated Trace Source' to 'Traces' in the UI." >&2
 fi
-create_source "Logs" "$LOG_EXTRA" >/dev/null
+create_source "Logs" "$LOG_PAYLOAD" >/dev/null
 
 print_settings
 echo
