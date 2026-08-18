@@ -26,14 +26,30 @@ components:
       tag: "${VISA_IMAGE_TAG}"
     # Small cache so it fills within a minute or two of distinct-Visa checkout traffic
     # (default in the fork is 1000). Tune via VISA_CACHE_SIZE in the environment.
+    # Walkthrough step 13's `visa_validation_cache.size` chart needs these too, for exactly
+    # the same reason as the frontend below: payment boots via
+    #   node --require @hyperdx/node-opentelemetry/build/src/tracing index.js
+    # i.e. the SDK's env-only `tracing` preload, so HyperDX.init() receives NO config and
+    # hard-returns unless an api key is in the environment ("OpenTelemetry SDK initialization
+    # skipped"). With init skipped there is no MeterProvider, so the observable gauge
+    # registered in charge.js against the GLOBAL meter is a silent no-op and payment emits no
+    # spans of its own either. (src/payment/opentelemetry.js does pass a hardcoded apiKey,
+    # but it is dead code — index.js never requires it.)
+    # The endpoints are needed because the SDK exports OTLP *HTTP* to
+    # "${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/<signal>", and the chart's base is the collector's
+    # *gRPC* port (:4317); traces/logs are set alongside metrics so enabling init() doesn't
+    # leave two exporters silently POSTing at a gRPC listener.
     envOverrides:
       - name: CACHE_SIZE
         value: "${VISA_CACHE_SIZE}"
-    # KNOWN LIMITATION: the fork Node payment (@hyperdx/node-opentelemetry) does not export
-    # its observable gauge `visa_validation_cache.size` here — no Node app-metric scope
-    # reaches ClickHouse even with OTEL_METRICS_EXPORTER=otlp — so walkthrough step 13's
-    # cache-size chart has no series. Steps 1-12 and the metrics *source* (infra + kafka +
-    # postgres + Java app metrics) work. Tracked as a follow-up issue.
+      - name: HYPERDX_API_KEY
+        value: "local-collector-no-auth-required"
+      - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/metrics"
+      - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/traces"
+      - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/logs"
 
   load-generator:
     imageOverride:

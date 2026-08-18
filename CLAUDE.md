@@ -92,6 +92,21 @@ services to the fork build on top of the stock chart:
   scenario).
 - **Note:** the cache needs enough distinct Visa checkouts to exceed `CACHE_SIZE` before
   `Visa cache full` starts throwing — expect a minute or two of traffic.
+- **`HYPERDX_API_KEY` is mandatory for the fork `frontend` + `payment`** (set in the overlay).
+  Both init telemetry via `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns without
+  an api key** ("OpenTelemetry SDK initialization skipped") — no tracing SDK, no context
+  manager, no MeterProvider. Symptoms if it's missing: **zero spans** from those services, an
+  **empty `TraceId`** on `Failed to place order` (so no `Trace` button, walkthrough step 8),
+  and **no `visa_validation_cache.size` gauge** (step 13). Logs still arrive, because
+  `utils/logger.js` builds its winston→OTLP transport independently of `init()` — which makes
+  this fail *silently and confusingly*. The key is only sent as an `Authorization` header; our
+  collector doesn't check it. Don't be misled by `src/payment/opentelemetry.js`, which passes a
+  hardcoded key but is **dead code** (`index.js` never requires it).
+- **The SDK exports OTLP over HTTP, the chart points at gRPC.** It derives its URL from
+  `${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/<signal>`, but the chart sets that base to the collector's
+  **gRPC** port `:4317`, so exports POST HTTP at a gRPC listener and fail silently. The overlay
+  sets per-signal `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` to `:4318` (these take
+  precedence) and leaves the `:4317` base alone for everything else.
 Design: [docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md](docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md).
 
 ### Replicating the ClickStack remote-demo walkthrough (HyperDX sources)

@@ -182,9 +182,10 @@ required to follow it against **your own** stack (steps 1–13):
 ```bash
 make otel-up SCENARIOS=paymentCacheLeak      # fork payment + load-generator + frontend
 ```
-This produces the `Failed to place order` frontend log (step 6) and the failing checkout
-**traces** (step 8). (The infra **metrics** for steps 7/10 are already collected; the
-step-13 cache gauge is a [known limitation](#known-limitations-tracked-as-github-issues).)
+This produces the `Failed to place order` frontend log (step 6), the failing checkout
+**traces** (step 8) — the log carries a `TraceId`, so its `Trace` button works — and the
+`visa_validation_cache.size` gauge for step 13. (The infra **metrics** for steps 7/10 are
+already collected.)
 
 **2. Configure the HyperDX sources** — the ClickStack collector auto-creates the ClickHouse
 *tables*, but HyperDX *sources* (which point HyperDX at those tables and correlate them) are
@@ -212,11 +213,18 @@ the hosted HyperDX UI → **Team Settings → Sources**, all pointing at your `d
 The **Correlated Trace Source** on the Logs source is what makes the `Trace` button appear on
 a log (step 8). With the default OpenTelemetry schema HyperDX infers the column mappings.
 
+> **Why the fork services need `HYPERDX_API_KEY`.** Both the fork `frontend` and `payment`
+> initialise telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns
+> unless an api key is in the environment** ("OpenTelemetry SDK initialization skipped"). With
+> it skipped they emit **no spans and no app metrics**, and their logs carry an empty
+> `TraceId` — so no `Trace` button (step 8) and no cache gauge (step 13), no matter how the
+> sources are configured. The SDK also exports OTLP over **HTTP** while the chart points
+> `OTEL_EXPORTER_OTLP_ENDPOINT` at the collector's **gRPC** port, so the per-signal
+> `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` vars redirect it to `:4318`. All of this
+> is handled in `otel/otel-demo-visa-cache-values.yaml`; the key is only sent as an
+> `Authorization` header and our own collector doesn't authenticate it.
+
 **Known limitations (tracked as GitHub issues):**
-- **Step 13's `visa_validation_cache.size` gauge chart** has no data — the fork Node payment
-  (`@hyperdx/node-opentelemetry`) doesn't export app metrics here. Everything else in
-  steps 1–12 works, and the Metrics source/table is populated with infra + kafka + postgres +
-  Java-service metrics (so steps 7 and 10 work).
 - **Session replay (steps 14–15)** is not yet included — it needs browser RUM (the fork
   frontend's HyperDX browser SDK wired to an ingestion endpoint, a Playwright browser-traffic
   driver, and the Sessions source populated).

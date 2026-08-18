@@ -79,10 +79,50 @@ On the live cluster with `SCENARIOS=paymentCacheLeak`: `Failed to place order` f
 logs (16 in a 4-min window) and `Visa cache full` checkout traces (22) confirmed in
 ClickHouse; fork frontend/payment/load-generator run their arm64 images (0 restarts).
 
+## Follow-up: the HyperDX SDK was never initialising (steps 8 and 13)
+
+Two symptoms originally filed as separate limitations — the `Failed to place order` log having
+no `Trace` button, and the step-13 `visa_validation_cache.size` gauge having no data — turned
+out to share **one root cause**, unrelated to HyperDX source configuration.
+
+Both fork services initialise via `@hyperdx/node-opentelemetry`, whose `init()`
+**hard-returns unless an api key is present in the environment**, printing:
+
+```
+[⚡HyperDX] ✖ apiKey or HYPERDX_API_KEY or OTEL_EXPORTER_OTLP_HEADERS is not set
+[⚡HyperDX] 🚫 OpenTelemetry SDK initialization skipped
+```
+
+With init skipped there is no tracing SDK, no context manager and no MeterProvider, so:
+- `frontend` emitted **zero spans**, and with no active span its logs carried an **empty
+  `TraceId`** — nothing for HyperDX to correlate (step 8). The log still reached ClickHouse
+  because `utils/logger.js` builds its winston→OTLP transport directly, independent of
+  `init()`; that mismatch is why the log was visible but its trace never was.
+- `payment` emitted no spans, and the observable gauge registered in `charge.js` against the
+  **global** meter was a silent no-op (step 13). Note `src/payment/opentelemetry.js` does pass
+  a hardcoded `apiKey`, but it is **dead code** — `index.js` never requires it; the service
+  boots with `node --require @hyperdx/node-opentelemetry/build/src/tracing`, the env-only
+  preload.
+
+Compounding it, the SDK exports OTLP over **HTTP** and derives its URL from
+`${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/<signal>`, while the chart sets that base to the
+collector's **gRPC** port (`:4317`) — so every export POSTed HTTP at a gRPC listener and
+failed silently.
+
+Fix (in `otel/otel-demo-visa-cache-values.yaml`): `HYPERDX_API_KEY` plus the per-signal
+`OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` vars pointed at `:4318`, on both services.
+
+Verified on the live cluster:
+- 23/23 of the OTLP-delivered `Failed to place order` logs carry a `TraceId`, and those ids
+  resolve to 540 spans across 22 traces, with the chain `frontend POST /api/checkout` →
+  `checkout PlaceOrder` → `PaymentService/Charge` all in `Error`.
+- `visa_validation_cache.size` (scope `payment.card_validator`) reports a 60s series that
+  fills and saturates at `CACHE_SIZE`: `4 → 10 → 10 → 10`.
+- Caveat: each `Failed to place order` appears **twice** in HyperDX — the OTLP copy (with the
+  working `Trace` button) and the container-stdout copy scraped by the agent DaemonSet (no
+  `TraceId`). Pre-existing behaviour for every service that both logs to stdout and exports
+  OTLP; filter on the `node-logger` scope if it matters.
+
 ## Known limitations (→ GitHub issues)
-- **Step 13 gauge** (`visa_validation_cache.size`): the fork Node payment doesn't export app
-  metrics in this setup (verified: 0 rows even with `OTEL_METRICS_EXPORTER=otlp`; other
-  services' app metrics do flow). Steps 1–12 + the metrics source (infra/kafka/postgres/Java)
-  work.
 - **Session replay (steps 14–15)**: browser RUM — SDK wiring + ingestion, browser-traffic
   driver, Sessions source population.
