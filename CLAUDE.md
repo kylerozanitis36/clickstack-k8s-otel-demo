@@ -74,16 +74,17 @@ The ClickStack `remote-demo-data` walkthrough's `Visa cache full: cannot add new
 `Failed to place order` incident exists **only in ClickHouse's demo fork**
 (`ClickHouse/opentelemetry-demo`), not the stock chart — upstream (any version, incl.
 `main`) instead throws `Payment request failed. Invalid token. app.loyalty.level=gold`.
-`make otel-up SCENARIOS=paymentCacheLeak` reproduces it **live** by swapping just two
+`make otel-up SCENARIOS=paymentCacheLeak` reproduces it **live** by swapping three
 services to the fork build on top of the stock chart:
-- **What fires it:** the fork **payment** service (implements `visaValidationCache` +
-  the `paymentCacheLeak` flag; throws `Visa cache full…` once the cache reaches
-  `CACHE_SIZE`) plus the fork **load-generator** (sends random **distinct** Visa numbers
-  that fill the cache — the stock loadgen uses a fixed card and never would). flagd binary
-  and frontend stay stock.
+- **What fires it:** three services are swapped to the fork build — **payment** (implements
+  `visaValidationCache` + the `paymentCacheLeak` flag; throws `Visa cache full…` once the
+  cache reaches `CACHE_SIZE`), **load-generator** (sends random **distinct** Visa numbers
+  that fill the cache — the stock loadgen uses a fixed card and never would), and
+  **frontend** (logs `Failed to place order` on checkout failure — the stock frontend's
+  checkout route has no error handling, so it never logs that). flagd binary stays stock.
 - **How it's built:** the fork's published images are amd64-only, so `deploy-otel.sh`
   sparse-clones the pinned fork (`CLICKHOUSE_DEMO_FORK_REPO`/`_REF` in `.env`, defaulted),
-  `docker build`s the `payment` + `load-generator` images for the **host arch**, and
+  `docker build`s the `payment` + `load-generator` + `frontend` images for the **host arch**, and
   `kind load`s them (cached under `.cache/`; first run adds a few minutes). The
   `paymentCacheLeak` flag def is merged in via `otel/flagd-extra-flags.json`; the image
   overrides + `CACHE_SIZE` (default 10, via `VISA_CACHE_SIZE`) come from the
@@ -91,7 +92,42 @@ services to the fork build on top of the stock chart:
   scenario).
 - **Note:** the cache needs enough distinct Visa checkouts to exceed `CACHE_SIZE` before
   `Visa cache full` starts throwing — expect a minute or two of traffic.
+- **`HYPERDX_API_KEY` is mandatory for the fork `frontend` + `payment`** (set in the overlay).
+  Both init telemetry via `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns without
+  an api key** ("OpenTelemetry SDK initialization skipped") — no tracing SDK, no context
+  manager, no MeterProvider. Symptoms if it's missing: **zero spans** from those services, an
+  **empty `TraceId`** on `Failed to place order` (so no `Trace` button, walkthrough step 8),
+  and **no `visa_validation_cache.size` gauge** (step 13). Logs still arrive, because
+  `utils/logger.js` builds its winston→OTLP transport independently of `init()` — which makes
+  this fail *silently and confusingly*. The key is only sent as an `Authorization` header; our
+  collector doesn't check it. Don't be misled by `src/payment/opentelemetry.js`, which passes a
+  hardcoded key but is **dead code** (`index.js` never requires it).
+- **The SDK exports OTLP over HTTP, the chart points at gRPC.** It derives its URL from
+  `${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/<signal>`, but the chart sets that base to the collector's
+  **gRPC** port `:4317`, so exports POST HTTP at a gRPC listener and fail silently. The overlay
+  sets per-signal `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` to `:4318` (these take
+  precedence) and leaves the `:4317` base alone for everything else.
 Design: [docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md](docs/superpowers/specs/2026-07-20-visa-cache-scenario-design.md).
+
+### Replicating the ClickStack remote-demo walkthrough (HyperDX sources)
+The `remote-demo-data` walkthrough reads **four HyperDX data sources** — Logs, Traces,
+Metrics, Sessions. The ClickStack collector auto-creates the ClickHouse **tables**, but a
+HyperDX **source** (app-level config pointing HyperDX at a table + column/correlation
+mappings) is a **separate** thing that is **not** auto-created for a user's own ClickHouse.
+That's why traces (no `Trace` button) and metrics (no metrics view) don't appear until the
+sources are configured. Steps 1–13 are covered by:
+1. `make otel-up SCENARIOS=paymentCacheLeak` (fork payment/loadgen/frontend → the incident +
+   the `visa_validation_cache.size` gauge + the `Failed to place order` log).
+2. `make hyperdx-sources` — configures/prints the Logs/Traces/Metrics/Sessions sources
+   (`scripts/configure-hyperdx-sources.sh`). For **Managed ClickStack** it uses the
+   **ClickHouse Cloud API** (`api.clickhouse.cloud/v1/.../clickstack/sources`, Basic auth
+   with a Cloud API key; `.env`: `CLICKHOUSE_CLOUD_ORG_ID`/`_SERVICE_ID`/`_API_KEY_ID`/
+   `_API_KEY_SECRET`) with `APPLY=1`; else it prints exact values for Team Settings →
+   Sources. The Cloud source-**create** endpoints are **Beta**, so the UI steps (README)
+   are the verified path. (Self-hosted HyperDX uses a different API — Bearer + `:8000/api/v2`
+   — not what this script targets.)
+Session replay (steps 14–15) needs browser RUM and is tracked as a GitHub issue.
+Design: [docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md](docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md).
 
 ### Gotchas (learned during setup)
 - Agent collector image tag **must match the helm chart's appVersion** (`0.154.0`); the

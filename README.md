@@ -81,6 +81,7 @@ otel/                     OpenTelemetry Helm values:
   otel-demo-values.yaml      OTel Demo, routed to the gateway (envsubst template)
 ingress/frontend-ingress.yaml  Ingress exposing the demo UI on localhost:8080
 scripts/                  create/delete/pause/resume cluster + deploy/teardown OTel + ingress
+                          + configure-hyperdx-sources.sh (HyperDX Logs/Traces/Metrics/Sessions)
 docs/superpowers/         design spec + implementation plan
 ```
 
@@ -150,14 +151,18 @@ This reproduces the exact incident from the ClickStack
 [remote demo walkthrough](https://clickhouse.com/docs/use-cases/observability/clickstack/getting-started/remote-demo-data)
 (`Visa cache full: cannot add new item.` → `Failed to place order`) **live in your own
 cluster**. That scenario exists only in ClickHouse's demo *fork*, not the stock chart, so
-selecting it swaps just two services (`payment` + `load-generator`) to the fork build on
-top of the stock chart. Because the fork's published images are amd64-only, `deploy-otel.sh`
-builds them locally for your architecture and loads them into kind (cached under `.cache/`;
-first run takes a few extra minutes). It needs a minute or two of distinct-Visa checkout
-traffic to fill the cache (`CACHE_SIZE`, default 10, tunable via `VISA_CACHE_SIZE`) before
-`Visa cache full` starts throwing. Composable, e.g.
+selecting it swaps three services — `payment`, `load-generator`, and `frontend` — to the fork
+build on top of the stock chart (`frontend` is what logs `Failed to place order`; the stock
+frontend's checkout route has no error handling). Because the fork's published images are
+amd64-only, `deploy-otel.sh` builds them locally for your architecture and loads them into
+kind (cached under `.cache/`; first run takes a few extra minutes). It needs a minute or two
+of distinct-Visa checkout traffic to fill the cache (`CACHE_SIZE`, default 10, tunable via
+`VISA_CACHE_SIZE`) before `Visa cache full` starts throwing. Composable, e.g.
 `SCENARIOS="paymentCacheLeak paymentFailure=25%"`. Pin the fork via
 `CLICKHOUSE_DEMO_FORK_REF` in `.env`.
+
+> To walk through the demo end-to-end you also need the HyperDX **data sources** configured —
+> see [Replicate the ClickStack walkthrough](#replicate-the-clickstack-walkthrough) below.
 
 > The demo chart bakes the flag catalog into a static file with no Helm override, so
 > `deploy-otel.sh` delta-patches the selection into its own `flagd-config-scenarios`
@@ -165,6 +170,64 @@ traffic to fill the cache (`CACHE_SIZE`, default 10, tunable via `VISA_CACHE_SIZ
 > `flagd-config` untouched to avoid a Helm field-ownership conflict), then restarts
 > `flagd` (which only reads the file at startup). Idempotent, and self-heals on chart
 > upgrades — it encodes only the selected delta, never a full copy.
+
+### Replicate the ClickStack walkthrough
+
+The ClickStack
+[remote-demo walkthrough](https://clickhouse.com/docs/use-cases/observability/clickstack/getting-started/remote-demo-data)
+reads **four HyperDX data sources** — Logs, Traces, Metrics, Sessions. Two things are
+required to follow it against **your own** stack (steps 1–13):
+
+**1. Generate the data** — deploy the Visa-cache incident:
+```bash
+make otel-up SCENARIOS=paymentCacheLeak      # fork payment + load-generator + frontend
+```
+This produces the `Failed to place order` frontend log (step 6), the failing checkout
+**traces** (step 8) — the log carries a `TraceId`, so its `Trace` button works — and the
+`visa_validation_cache.size` gauge for step 13. (The infra **metrics** for steps 7/10 are
+already collected.)
+
+**2. Configure the HyperDX sources** — the ClickStack collector auto-creates the ClickHouse
+*tables*, but HyperDX *sources* (which point HyperDX at those tables and correlate them) are
+**not** auto-created for your own ClickHouse. This is why "view a trace" and the metrics view
+are missing until you configure them.
+```bash
+make hyperdx-sources                          # prints readiness + exact source settings
+make hyperdx-sources APPLY=1                   # also attempts to create them via the Cloud API
+```
+For **Managed ClickStack** (ClickHouse Cloud), `APPLY=1` uses the ClickHouse Cloud API
+(`https://api.clickhouse.cloud/v1/organizations/<ORG>/services/<SERVICE>/clickstack/...`,
+HTTP Basic auth). Set in `.env`: `CLICKHOUSE_CLOUD_ORG_ID`, `CLICKHOUSE_CLOUD_SERVICE_ID`,
+and a Cloud API key (`CLICKHOUSE_CLOUD_API_KEY_ID` / `_SECRET` from **Organization settings →
+API keys**, needing the *Manage ClickStack API* permission). The source-**create** endpoints
+are **Beta**, so if `APPLY` doesn't create them, configure them by hand (the reliable path) in
+the hosted HyperDX UI → **Team Settings → Sources**, all pointing at your `default` database:
+
+| Source | Kind | Table(s) | Key fields |
+|--------|------|----------|-----------|
+| Logs | Log | `otel_logs` | Timestamp=`Timestamp`, Trace Id=`TraceId`, Span Id=`SpanId`, **Correlated Trace Source = Traces** |
+| Traces | Trace | `otel_traces` | Timestamp=`Timestamp`, Trace Id=`TraceId`, Span Id=`SpanId` |
+| Metrics | Metric | `otel_metrics_gauge` / `otel_metrics_sum` / `otel_metrics_histogram` | (default OTel schema) |
+| Sessions | Session | `hyperdx_sessions` | (populated only with browser RUM — see below) |
+
+The **Correlated Trace Source** on the Logs source is what makes the `Trace` button appear on
+a log (step 8). With the default OpenTelemetry schema HyperDX infers the column mappings.
+
+> **Why the fork services need `HYPERDX_API_KEY`.** Both the fork `frontend` and `payment`
+> initialise telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns
+> unless an api key is in the environment** ("OpenTelemetry SDK initialization skipped"). With
+> it skipped they emit **no spans and no app metrics**, and their logs carry an empty
+> `TraceId` — so no `Trace` button (step 8) and no cache gauge (step 13), no matter how the
+> sources are configured. The SDK also exports OTLP over **HTTP** while the chart points
+> `OTEL_EXPORTER_OTLP_ENDPOINT` at the collector's **gRPC** port, so the per-signal
+> `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` vars redirect it to `:4318`. All of this
+> is handled in `otel/otel-demo-visa-cache-values.yaml`; the key is only sent as an
+> `Authorization` header and our own collector doesn't authenticate it.
+
+**Known limitations (tracked as GitHub issues):**
+- **Session replay (steps 14–15)** is not yet included — it needs browser RUM (the fork
+  frontend's HyperDX browser SDK wired to an ingestion endpoint, a Playwright browser-traffic
+  driver, and the Sessions source populated).
 
 ### Option 2 — raw helm/kubectl
 Either path works — the scripts just codify these commands. With `.env` loaded

@@ -2,13 +2,14 @@
 # otel-demo-visa-cache-values.yaml — overlay for SCENARIOS=paymentCacheLeak
 # =============================================================================
 # Applied as an ADDITIONAL `-f` on top of otel-demo-values.yaml ONLY when the
-# paymentCacheLeak scenario is selected. It swaps just the payment + load-generator
-# services to ClickHouse's demo-fork build (locally built for this host arch and
-# `kind load`ed by scripts/deploy-otel.sh) — the only two services needed for the
-# "Visa cache full: cannot add new item." incident:
+# paymentCacheLeak scenario is selected. It swaps three services to ClickHouse's demo-fork
+# build (locally built for this host arch and `kind load`ed by scripts/deploy-otel.sh) —
+# the ones needed for the "Visa cache full: cannot add new item." incident:
 #   - payment       : implements the visaValidationCache + paymentCacheLeak flag.
 #   - load-generator: sends random DISTINCT Visa numbers so the cache actually fills
 #                     (the stock load generator uses a fixed card and never would).
+#   - frontend      : logs "Failed to place order" on checkout failure (the stock
+#                     frontend has no such log) — the walkthrough's step-6 error cluster.
 # Everything else stays stock. This is a TEMPLATE rendered with envsubst before use.
 # =============================================================================
 
@@ -25,9 +26,30 @@ components:
       tag: "${VISA_IMAGE_TAG}"
     # Small cache so it fills within a minute or two of distinct-Visa checkout traffic
     # (default in the fork is 1000). Tune via VISA_CACHE_SIZE in the environment.
+    # Walkthrough step 13's `visa_validation_cache.size` chart needs these too, for exactly
+    # the same reason as the frontend below: payment boots via
+    #   node --require @hyperdx/node-opentelemetry/build/src/tracing index.js
+    # i.e. the SDK's env-only `tracing` preload, so HyperDX.init() receives NO config and
+    # hard-returns unless an api key is in the environment ("OpenTelemetry SDK initialization
+    # skipped"). With init skipped there is no MeterProvider, so the observable gauge
+    # registered in charge.js against the GLOBAL meter is a silent no-op and payment emits no
+    # spans of its own either. (src/payment/opentelemetry.js does pass a hardcoded apiKey,
+    # but it is dead code — index.js never requires it.)
+    # The endpoints are needed because the SDK exports OTLP *HTTP* to
+    # "${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/<signal>", and the chart's base is the collector's
+    # *gRPC* port (:4317); traces/logs are set alongside metrics so enabling init() doesn't
+    # leave two exporters silently POSTing at a gRPC listener.
     envOverrides:
       - name: CACHE_SIZE
         value: "${VISA_CACHE_SIZE}"
+      - name: HYPERDX_API_KEY
+        value: "local-collector-no-auth-required"
+      - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/metrics"
+      - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/traces"
+      - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/logs"
 
   load-generator:
     imageOverride:
@@ -36,3 +58,41 @@ components:
     # NOTE: browser-traffic-off (LOCUST_BROWSER_TRAFFIC_ENABLED=false) is set via
     # load-generator.envOverrides in the base values; imageOverride is a separate key,
     # so Helm deep-merges and that setting is preserved.
+
+  frontend:
+    imageOverride:
+      repository: "${VISA_FRONTEND_REPO}"
+      tag: "${VISA_IMAGE_TAG}"
+    # Server-side only for now: the fork frontend also ships the HyperDX browser SDK, but
+    # driving browser/RUM sessions (walkthrough steps 14-15) needs real browser traffic and
+    # a Sessions source — tracked as a follow-up.
+    #
+    # These three env vars are what make walkthrough step 8 work — clicking through from the
+    # `Failed to place order` log to its trace. Without them the log arrives with an EMPTY
+    # TraceId, so HyperDX has nothing to correlate and shows no Trace button. Why:
+    #
+    #  1. HYPERDX_API_KEY — the fork frontend instruments itself with HyperDX.init()
+    #     (utils/telemetry/Instrumentation.js, loaded via `node --require`). That call
+    #     HARD-RETURNS unless an api key is present, printing:
+    #        "apiKey or HYPERDX_API_KEY or OTEL_EXPORTER_OTLP_HEADERS is not set"
+    #        "OpenTelemetry SDK initialization skipped"
+    #     so the tracing SDK, auto-instrumentation and context manager never start: the
+    #     frontend emits NO spans, and its logs therefore carry no trace context. The key is
+    #     only ever sent as an `Authorization` header, and we export to our OWN collector,
+    #     which doesn't authenticate — so any non-empty value works. (The winston->OTLP log
+    #     transport in utils/logger.js is built directly and works without init(), which is
+    #     why logs appeared while traces did not.)
+    #  2/3. OTEL_EXPORTER_OTLP_{TRACES,LOGS}_ENDPOINT — the HyperDX SDK exports over OTLP
+    #     *HTTP* and builds its URL as "${OTEL_EXPORTER_OTLP_ENDPOINT}/v1/{traces,logs}".
+    #     The chart sets that base to the collector's *gRPC* port (:4317), so the SDK would
+    #     POST HTTP at a gRPC listener and every export fails. These signal-specific vars
+    #     take precedence (see the SDK's constants.js), so we point them at the collector's
+    #     OTLP/HTTP port (:4318) while leaving the chart's :4317 base alone for everything
+    #     else. $(OTEL_COLLECTOR_NAME) is k8s env interpolation, resolved by kubelet.
+    envOverrides:
+      - name: HYPERDX_API_KEY
+        value: "local-collector-no-auth-required"
+      - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/traces"
+      - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+        value: "http://$(OTEL_COLLECTOR_NAME):4318/v1/logs"
