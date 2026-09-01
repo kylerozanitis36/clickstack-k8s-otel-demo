@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 SHELL := /usr/bin/env bash
 
-.PHONY: help up down recreate pause resume status kubeconfig otel-up otel-down otel-status otel-scenarios hyperdx-sources ingress-up ingress-down ingress-status
+.PHONY: help up down recreate pause resume status kubeconfig demo-images otel-up otel-down otel-status hyperdx-sources ingress-up ingress-down ingress-status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -27,17 +27,17 @@ status: ## Show nodes and all pods
 kubeconfig: ## Print the export line to point kubectl at this cluster
 	@echo "export KUBECONFIG=$(CURDIR)/.kube/config"
 
-otel-up: ## Deploy the OTel pipeline; SCENARIOS="flag=variant ..."|none picks failures (default: 3 scenarios)
-	@SCENARIOS="$(SCENARIOS)" scripts/deploy-otel.sh
+demo-images: ## Build the demo-fork service images for this arch and load them into kind (~12 min first run)
+	@scripts/build-demo-images.sh
+
+otel-up: ## Deploy the OTel pipeline + demo (run make demo-images first)
+	@scripts/deploy-otel.sh
 
 otel-down: ## Remove the OTel pipeline (keeps the cluster)
 	@scripts/teardown-otel.sh
 
 otel-status: ## Show OTel/demo workloads
 	@kubectl -n observability get pods -o wide && echo && kubectl -n otel-demo get pods
-
-otel-scenarios: ## List available failure-scenario flags + variants for SCENARIOS
-	@scripts/list-scenarios.sh
 
 hyperdx-sources: ## Configure/print the HyperDX Logs/Traces/Metrics/Sessions sources (pass --apply to attempt via API)
 	@scripts/configure-hyperdx-sources.sh $(if $(APPLY),--apply,)
