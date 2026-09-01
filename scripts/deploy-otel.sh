@@ -42,8 +42,8 @@ helm upgrade --install otel-agent   open-telemetry/opentelemetry-collector -n ob
 helm upgrade --install otel-cluster open-telemetry/opentelemetry-collector -n observability -f otel/k8s-deployment-values.yaml
 
 # --- OTel Demo (ClickHouse fork manifest) ------------------------------------
-# The demo is no longer a Helm chart: we apply the fork's own manifest, vendored
-# verbatim under otel-demo/upstream/ and customised by otel-demo/kustomization.yaml.
+# The demo is applied from the fork's own manifest, vendored verbatim under
+# otel-demo/upstream/ and customised by otel-demo/kustomization.yaml.
 # Its images are built locally for this architecture by scripts/build-demo-images.sh,
 # because the fork publishes amd64 only.
 
@@ -67,8 +67,9 @@ if [ "$IMAGES_SHA" != "$CLICKHOUSE_DEMO_FORK_REF" ]; then
   exit 1
 fi
 
-# The demo used to be a Helm release. Helm and kubectl fight over ownership of the
-# same object names, so refuse to apply on top of one rather than half-converting.
+# If a Helm release of the demo is present (older installs, or a colleague's cluster),
+# refuse rather than half-convert: spec.selector is immutable, so kubectl apply fails
+# per Deployment and leaves the namespace in a mixed state.
 if helm status otel-demo -n otel-demo >/dev/null 2>&1; then
   echo "ERROR: an old Helm release 'otel-demo' is still installed. Remove it first:" >&2
   echo "         make otel-down" >&2

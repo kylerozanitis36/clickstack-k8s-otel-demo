@@ -13,17 +13,27 @@ declarative so others can recreate the exact same cluster from checked-in config
 - macOS with [Homebrew](https://brew.sh)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed **and running**
 - `kubectl` (the scripts install `kind`, `helm`, and `gettext`/`envsubst` for you if missing)
+- For the demo: `docker compose` (ships with Docker Desktop) and roughly 20 GB of Docker disk.
+  `make demo-images` builds 19 service images from source — about 12 minutes once, then cached.
 
 ## Quick start
 
-```bash
-cp .env.example .env     # adjust CLUSTER_NAME / node image if desired
-make up                  # create the 3-node cluster (1 control-plane + 2 workers)
+The full path, from nothing to a storefront emitting telemetry into ClickHouse Cloud:
 
-# Point kubectl at the project-local kubeconfig:
-eval "$(make -s kubeconfig)"
-make status              # nodes + pods
+```bash
+cp .env.example .env     # set CLICKHOUSE_ENDPOINT + CLICKHOUSE_PASSWORD
+eval "$(make -s kubeconfig)"   # point kubectl at the project-local kubeconfig
+
+make up                  # 3-node kind cluster (1 control-plane + 2 workers)
+make demo-images         # build the demo images for your arch (~12 min, once)
+make otel-up             # gateway + agents + demo
+make ingress-up          # storefront on http://localhost:8080
+make hyperdx-sources     # print the HyperDX source settings to enter in the UI
 ```
+
+`make up` alone is enough if you only want the cluster. Each stage is explained below:
+[the cluster](#cluster-layout), [the OTel pipeline](#opentelemetry-collection--clickhouse-cloud),
+and [the demo UI](#access-the-demo-ui-on-localhost8080).
 
 ## Cluster layout
 
@@ -46,7 +56,13 @@ make status              # nodes + pods
 | `make resume`     | Resume a paused cluster                      |
 | `make status`     | Show nodes and all pods                      |
 | `make kubeconfig` | Print the `export KUBECONFIG=...` line       |
-| `make demo-images`| Build the demo-fork images for this arch     |
+| `make demo-images`| Build the demo images for this arch, load into kind (~12 min, once) |
+| `make otel-up`    | Deploy the gateway, agents and demo          |
+| `make otel-down`  | Remove the pipeline (keeps the cluster)      |
+| `make otel-status`| Show OTel + demo workloads                   |
+| `make hyperdx-sources` | Print (or `APPLY=1` create) the HyperDX sources |
+| `make ingress-up` | Expose the demo UI on `http://localhost:8080` |
+| `make ingress-down` / `make ingress-status` | Remove / inspect the ingress |
 
 ### Pause / resume
 
@@ -68,7 +84,8 @@ make resume    # start them, wait for Ready; workloads come back automatically
 - [`kind/cluster-config.yaml`](kind/cluster-config.yaml) is a template; `scripts/create-cluster.sh`
   renders it with `envsubst` and feeds it to `kind`.
 - [`scripts/preflight.sh`](scripts/preflight.sh) checks Docker is running and installs missing tools.
-- [`otel/`](otel/) holds the Helm values for the OpenTelemetry pipeline (see below).
+- [`otel/`](otel/) holds the Helm values for the gateway and agents; [`otel-demo/`](otel-demo/)
+  holds the demo itself, applied with `kubectl apply -k` (see below).
 
 ### Repository layout
 ```
@@ -87,13 +104,7 @@ otel-demo/                the demo, deployed with kubectl apply -k:
 ingress/frontend-ingress.yaml  Ingress exposing the demo UI on localhost:8080
 scripts/                  create/delete/pause/resume cluster + deploy/teardown OTel + ingress
                           + configure-hyperdx-sources.sh (HyperDX Logs/Traces/Metrics/Sessions)
-docs/superpowers/         design spec + implementation plan
-```
-
-## Reproducibility check
-
-```bash
-make recreate   # should return to the same 3-node Ready state
+docs/superpowers/         design specs + implementation plans (historical record)
 ```
 
 ## OpenTelemetry collection → ClickHouse Cloud
@@ -102,10 +113,10 @@ Once the cluster is up, deploy the OTel pipeline that ships **logs, metrics, and
 to ClickHouse Cloud (viewed in the Cloud's built-in HyperDX UI). Architecture:
 
 ```
-otel-demo ns:     OTel Demo + its bundled collector ─┐ OTLP
-observability ns: DaemonSet agent (logs + node/pod metrics) ─┤
+otel-demo ns:     OTel Demo services (export OTLP directly) ─┐
+observability ns: DaemonSet agent (logs + node/pod metrics) ──┤
                   Deployment agent (events + cluster metrics) ─┤
-                                                              ▼
+                                                               ▼
                   GATEWAY (ClickStack collector) ── clickhouse exporter ──▶ ClickHouse Cloud
 ```
 
@@ -203,21 +214,18 @@ the hosted HyperDX UI → **Team Settings → Sources**, all pointing at your `d
 The **Correlated Trace Source** on the Logs source is what makes the `Trace` button appear on
 a log (step 8). With the default OpenTelemetry schema HyperDX infers the column mappings.
 
-> **Why the fork services need `HYPERDX_API_KEY`.** Both the fork `frontend` and `payment`
-> initialise telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns
-> unless an api key is in the environment** ("OpenTelemetry SDK initialization skipped"). With
-> it skipped they emit **no spans and no app metrics**, and their logs carry an empty
-> `TraceId` — so no `Trace` button (step 8) and no cache gauge (step 13), no matter how the
-> sources are configured. The SDK also exports OTLP over **HTTP** while the chart points
-> `OTEL_EXPORTER_OTLP_ENDPOINT` at the collector's **gRPC** port, so the per-signal
-> `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` vars redirect it to `:4318`. All of this
-> is handled in `otel/otel-demo-visa-cache-values.yaml`; the key is only sent as an
-> `Authorization` header and our own collector doesn't authenticate it.
+> **Why the demo needs `HYPERDX_API_KEY`.** The fork's `frontend` and `payment` initialise
+> telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns unless an api
+> key is in the environment** ("OpenTelemetry SDK initialization skipped"). With it skipped they
+> emit no spans and no app metrics, and their logs carry an empty `TraceId` — so no `Trace`
+> button (step 8) and no cache gauge (step 13), however the sources are configured.
+> `otel-demo/hyperdx-secret.yaml` supplies it. The value is only ever sent as an `Authorization`
+> header to our own collector, which doesn't authenticate, so any non-empty string works.
 
-**Known limitations (tracked as GitHub issues):**
-- **Session replay (steps 14–15)** is not yet included — it needs browser RUM (the fork
-  frontend's HyperDX browser SDK wired to an ingestion endpoint, a Playwright browser-traffic
-  driver, and the Sessions source populated).
+**Session replay (steps 14–15).** The data is there: the `artillery-loadgen` deployment drives
+a real Chromium browser through the storefront, so the fork frontend's HyperDX browser RUM SDK
+writes to `hyperdx_sessions` continuously. Configure the **Sessions** source (table above) to
+view it — that combination has not been verified end to end in the HyperDX UI.
 
 ### Option 2 — raw helm/kubectl
 Either path works — the scripts just codify these commands. With `.env` loaded

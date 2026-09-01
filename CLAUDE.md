@@ -15,8 +15,8 @@ by Docker Desktop. Topology: 1 control-plane + 2 workers, so node-level telemetr
 - kubeconfig is project-local at `./.kube/config` (isolated from `~/.kube/config`), context `kind-clickstack-local`.
 - Control-plane reserves host ports `8080->:80` and `8443->:443`; `8080->:80` is now
   used by the ingress controller (see "Demo UI ingress" below). `8443->:443` still free.
-- kind nodes already expose `/var/log/pods` + `/var/log/containers`, so a future OTel DaemonSet can
-  hostPath-mount them with no extra cluster config.
+- kind nodes expose `/var/log/pods` + `/var/log/containers`, which the `otel-agent` DaemonSet
+  hostPath-mounts for container logs.
 
 ### Common commands
 - `cp .env.example .env` — one-time setup (`.env` is gitignored).
@@ -29,7 +29,7 @@ by Docker Desktop. Topology: 1 control-plane + 2 workers, so node-level telemetr
 - `eval "$(make -s kubeconfig)"` — point kubectl at this cluster.
 - Prerequisites: Docker Desktop running, Homebrew. `make up` installs `kind`/`helm`/`gettext` if missing.
 
-## OpenTelemetry Collection (phase 2 — done)
+## OpenTelemetry Collection
 Pipeline shipping logs/metrics/traces to ClickHouse Cloud, viewed in Cloud's HyperDX UI.
 Design + plan: [docs/superpowers/specs/](docs/superpowers/specs/) and [docs/superpowers/plans/](docs/superpowers/plans/).
 
@@ -101,17 +101,19 @@ sources are configured. Steps 1–13 are covered by:
    Sources. The Cloud source-**create** endpoints are **Beta**, so the UI steps (README)
    are the verified path. (Self-hosted HyperDX uses a different API — Bearer + `:8000/api/v2`
    — not what this script targets.)
-Session replay (steps 14–15) needs browser RUM and is tracked as a GitHub issue.
+Session replay (steps 14–15): `artillery-loadgen` drives a real browser, so the fork
+frontend's RUM SDK populates `hyperdx_sessions` continuously. Configuring the Sessions
+source to read it has not been verified end to end.
 Design: [docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md](docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md).
 
 ### Gotchas (learned during setup)
 - Agent collector image tag **must match the helm chart's appVersion** (`0.154.0`); the
   `kubernetesAttributes` preset emits config keys older images reject (crash loop).
-- The demo's bundled collector, the hostPort clashes, the double-counted infra metrics and
-  the kubelet-cert log flood are all gone with the chart — the fork manifest ships no
-  collector at all.
+- The demo ships no collector of its own: its services export OTLP straight to the gateway
+  via the `my-clickstack-otel-collector` alias, so the agents are the only infra collectors
+  and nothing double-counts.
 
-## Demo UI ingress (phase 3 — done)
+## Demo UI ingress
 `make ingress-up` (run after `make otel-up`) exposes the OTel Demo storefront on
 `http://localhost:8080`. It deploys ingress-nginx via kind's static manifest (pinned in
 `scripts/deploy-ingress.sh`) and applies `ingress/frontend-ingress.yaml` (routes `/` to
@@ -127,8 +129,6 @@ Design: [docs/superpowers/specs/2026-07-22-walkthrough-replication-design.md](do
 - The script waits for the controller `Ready` (admission webhook serving) before applying the
   Ingress, then verifies `localhost:8080` returns 200.
 
-## Status / Next Steps
-Done: local cluster hosting (phase 1) + OTel collection into ClickHouse Cloud (phase 2)
-+ demo UI ingress on localhost:8080 (phase 3).
-Possible next: dashboards/alerts in HyperDX, sampling/retention tuning, or app-level
-instrumentation beyond the demo.
+## Possible next steps
+Dashboards/alerts in HyperDX, sampling and retention tuning, verifying the Sessions source
+for session replay, or app-level instrumentation beyond the demo.
