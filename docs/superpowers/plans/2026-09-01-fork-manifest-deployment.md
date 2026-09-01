@@ -331,7 +331,7 @@ Expected: `Overlay check OK: 19 local images, no Always pulls, CACHE_SIZE=10, ja
 kubectl kustomize otel-demo/ | ruby -ryaml -e 'puts "docs: #{YAML.load_stream($stdin.read).compact.size}"'
 ```
 
-Expected: `docs: 46` (53 base − 8 deleted + 2 added, one of which replaces nothing).
+Expected: `docs: 47` — 53 base, minus 8 deleted (jaeger Deployment + 3 Services + SA; prometheus SA + ClusterRole + ClusterRoleBinding), plus our 2 additions (alias Service, hyperdx-secret).
 
 - [ ] **Step 7: Commit**
 

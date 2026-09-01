@@ -1,0 +1,80 @@
+# =============================================================================
+# Our delta on top of ClickHouse's OTel-demo manifest.
+# =============================================================================
+# The base in upstream/ is a verbatim copy (see upstream/SOURCE) and is never
+# edited. Everything we change lives here, so "what did we change vs the fork"
+# stays a 40-line answer. scripts/check-overlay.sh asserts these still hold.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: otel-demo
+
+resources:
+  - upstream/opentelemetry-demo.yaml
+  - gateway-alias-service.yaml
+  - hyperdx-secret.yaml
+
+# All 19 fork images share one image NAME and differ only by tag, so a single
+# entry retargets them to the copies we build for this host's architecture.
+# The rename is deliberate: clickstack-local/ch-otel-demo does not exist on any
+# registry, so no misconfiguration can pull the amd64 originals over our arm64
+# builds.
+images:
+  - name: clickhouse/ch-otel-demo
+    newName: clickstack-local/ch-otel-demo
+
+patches:
+  # Images are kind-loaded, not pulled. "Always" would fetch the upstream
+  # amd64 image over ours and every pod would die with "exec format error".
+  # Every Deployment has containers[0]; only flagd has a second container.
+  - target:
+      kind: Deployment
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target:
+      kind: Deployment
+      name: flagd
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/1/imagePullPolicy
+        value: IfNotPresent
+
+  # The manifest ships CACHE_SIZE=100000, at which the Visa validation cache
+  # never fills and the walkthrough's incident never fires. 10 fills within a
+  # minute or two of checkout traffic.
+  - patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: payment
+      spec:
+        template:
+          spec:
+            containers:
+              - name: payment
+                env:
+                  - name: CACHE_SIZE
+                    value: "10"
+
+  # Jaeger is a second tracing backend we do not use; ClickHouse Cloud is the
+  # backend. The prometheus ServiceAccount/RBAC is orphaned — the manifest
+  # ships no prometheus workload.
+  - target:
+      name: "jaeger.*"
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ignored
+      $patch: delete
+  - target:
+      name: "prometheus"
+    patch: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: ignored
+      $patch: delete
