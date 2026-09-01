@@ -33,4 +33,12 @@ if ! command -v envsubst >/dev/null 2>&1; then
   brew install gettext
 fi
 
-echo "Preflight OK: docker running; kind, kubectl, helm, envsubst, jq, git available."
+# --- docker compose (used to build the demo-fork images) ---------------------
+docker compose version >/dev/null 2>&1 \
+  || fail "'docker compose' not available. Update Docker Desktop and retry."
+
+# --- kustomize (built into kubectl v1.14+; we rely on v5 patch semantics) ----
+kubectl kustomize --help >/dev/null 2>&1 \
+  || fail "'kubectl kustomize' not available. Update kubectl and retry."
+
+echo "Preflight OK: docker running; kind, kubectl (with kustomize), helm, docker compose, envsubst, jq, git available."
