@@ -3,6 +3,12 @@
 **Date:** 2026-07-20
 **Status:** approved (design)
 
+**Superseded by:** `docs/superpowers/specs/2026-09-01-fork-manifest-deployment-design.md`
+(2026-09-01). The SCENARIOS interface and the three-image fork overlay described
+here no longer exist: the demo is deployed from the fork's own manifest with all
+19 images built locally, and failure flags come from the fork's flagd defaults.
+Kept for the reasoning it records.
+
 ## Problem
 
 The ClickStack `remote-demo-data` walkthrough is built around a **"Visa cache full:

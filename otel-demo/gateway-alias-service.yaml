@@ -1,0 +1,13 @@
+# The fork's manifest sends all demo telemetry to a Service named
+# "my-clickstack-otel-collector" (its OTEL_COLLECTOR_NAME). We do not run the
+# ClickStack collector in-cluster — our gateway in the observability namespace is
+# the only thing that talks to ClickHouse Cloud. This alias points that name at
+# the gateway, so the fork manifest needs no edits at all.
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-clickstack-otel-collector
+  namespace: otel-demo
+spec:
+  type: ExternalName
+  externalName: clickstack-gateway-opentelemetry-collector.observability.svc.cluster.local

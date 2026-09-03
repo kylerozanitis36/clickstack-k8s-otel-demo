@@ -13,17 +13,27 @@ declarative so others can recreate the exact same cluster from checked-in config
 - macOS with [Homebrew](https://brew.sh)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed **and running**
 - `kubectl` (the scripts install `kind`, `helm`, and `gettext`/`envsubst` for you if missing)
+- For the demo: `docker compose` (ships with Docker Desktop) and roughly 20 GB of Docker disk.
+  `make demo-images` builds 19 service images from source — about 12 minutes once, then cached.
 
 ## Quick start
 
-```bash
-cp .env.example .env     # adjust CLUSTER_NAME / node image if desired
-make up                  # create the 3-node cluster (1 control-plane + 2 workers)
+The full path, from nothing to a storefront emitting telemetry into ClickHouse Cloud:
 
-# Point kubectl at the project-local kubeconfig:
-eval "$(make -s kubeconfig)"
-make status              # nodes + pods
+```bash
+cp .env.example .env     # set CLICKHOUSE_ENDPOINT + CLICKHOUSE_PASSWORD
+eval "$(make -s kubeconfig)"   # point kubectl at the project-local kubeconfig
+
+make up                  # 3-node kind cluster (1 control-plane + 2 workers)
+make demo-images         # build the demo images for your arch (~12 min, once)
+make otel-up             # gateway + agents + demo
+make ingress-up          # storefront on http://localhost:8080
+make hyperdx-sources     # print the HyperDX source settings to enter in the UI
 ```
+
+`make up` alone is enough if you only want the cluster. Each stage is explained below:
+[the cluster](#cluster-layout), [the OTel pipeline](#opentelemetry-collection--clickhouse-cloud),
+and [the demo UI](#access-the-demo-ui-on-localhost8080).
 
 ## Cluster layout
 
@@ -46,6 +56,13 @@ make status              # nodes + pods
 | `make resume`     | Resume a paused cluster                      |
 | `make status`     | Show nodes and all pods                      |
 | `make kubeconfig` | Print the `export KUBECONFIG=...` line       |
+| `make demo-images`| Build the demo images for this arch, load into kind (~12 min, once) |
+| `make otel-up`    | Deploy the gateway, agents and demo          |
+| `make otel-down`  | Remove the pipeline (keeps the cluster)      |
+| `make otel-status`| Show OTel + demo workloads                   |
+| `make hyperdx-sources` | Print (or `APPLY=1` create) the HyperDX sources |
+| `make ingress-up` | Expose the demo UI on `http://localhost:8080` |
+| `make ingress-down` / `make ingress-status` | Remove / inspect the ingress |
 
 ### Pause / resume
 
@@ -67,28 +84,27 @@ make resume    # start them, wait for Ready; workloads come back automatically
 - [`kind/cluster-config.yaml`](kind/cluster-config.yaml) is a template; `scripts/create-cluster.sh`
   renders it with `envsubst` and feeds it to `kind`.
 - [`scripts/preflight.sh`](scripts/preflight.sh) checks Docker is running and installs missing tools.
-- [`otel/`](otel/) holds the Helm values for the OpenTelemetry pipeline (see below).
+- [`otel/`](otel/) holds the Helm values for the gateway and agents; [`otel-demo/`](otel-demo/)
+  holds the demo itself, applied with `kubectl apply -k` (see below).
 
 ### Repository layout
 ```
 .env(.example)            cluster + ClickHouse Cloud config (.env is gitignored)
-Makefile                  make up/down/recreate/pause/resume/status/kubeconfig + otel-up/otel-down/otel-status/otel-scenarios
+Makefile                  make up/down/recreate/pause/resume/status/kubeconfig + demo-images/otel-up/otel-down/otel-status
 kind/cluster-config.yaml  kind cluster manifest (template)
-otel/                     OpenTelemetry Helm values:
+otel/                     OpenTelemetry Helm values (gateway + agents only):
   gateway-values.yaml       gateway → ClickHouse Cloud (the only egress)
   k8s-daemonset-values.yaml per-node agent: logs + host/kubelet metrics
   k8s-deployment-values.yaml single agent: k8s events + cluster metrics
-  otel-demo-values.yaml      OTel Demo, routed to the gateway (envsubst template)
+otel-demo/                the demo, deployed with kubectl apply -k:
+  upstream/                 verbatim copy of the fork's manifest @ a pinned SHA
+  kustomization.yaml        our delta (images, pull policy, cache size, deletions)
+  gateway-alias-service.yaml  points the demo's collector name at our gateway
+  artillery/                multi-arch replacement for the amd64-only artillery image
 ingress/frontend-ingress.yaml  Ingress exposing the demo UI on localhost:8080
 scripts/                  create/delete/pause/resume cluster + deploy/teardown OTel + ingress
                           + configure-hyperdx-sources.sh (HyperDX Logs/Traces/Metrics/Sessions)
-docs/superpowers/         design spec + implementation plan
-```
-
-## Reproducibility check
-
-```bash
-make recreate   # should return to the same 3-node Ready state
+docs/superpowers/         design specs + implementation plans (historical record)
 ```
 
 ## OpenTelemetry collection → ClickHouse Cloud
@@ -97,10 +113,10 @@ Once the cluster is up, deploy the OTel pipeline that ships **logs, metrics, and
 to ClickHouse Cloud (viewed in the Cloud's built-in HyperDX UI). Architecture:
 
 ```
-otel-demo ns:     OTel Demo + its bundled collector ─┐ OTLP
-observability ns: DaemonSet agent (logs + node/pod metrics) ─┤
+otel-demo ns:     OTel Demo services (export OTLP directly) ─┐
+observability ns: DaemonSet agent (logs + node/pod metrics) ──┤
                   Deployment agent (events + cluster metrics) ─┤
-                                                              ▼
+                                                               ▼
                   GATEWAY (ClickStack collector) ── clickhouse exporter ──▶ ClickHouse Cloud
 ```
 
@@ -116,60 +132,45 @@ talks to Cloud. Both agents and the demo send OTLP to it.
 ### Option 1 — scripted (recommended)
 ```bash
 cp .env.example .env          # fill in CLICKHOUSE_ENDPOINT + CLICKHOUSE_PASSWORD
+make demo-images              # build the 19 demo images for this arch (~12 min, once)
 make otel-up                  # gateway → agents → demo (idempotent)
 make otel-status              # all workloads
 make otel-down                # remove the pipeline (keeps the cluster)
 ```
 
-### Failure scenarios (always-on error patterns)
+### The demo and its failure scenarios
 
-The demo ships a Locust load generator (already running) plus a set of built-in
-failure scenarios controlled by [flagd](https://flagd.dev) feature flags — off by
-default. `make otel-up` turns a selectable set of them **on** so the pipeline
-continuously produces real error patterns (failing traces, error-rate spikes,
-correlated infra metrics) for a live, always-fresh demo.
+The demo is deployed from **ClickHouse's fork of the OpenTelemetry Demo**, not the upstream
+Helm chart. `otel-demo/upstream/opentelemetry-demo.yaml` is a verbatim copy of the fork's own
+Kubernetes manifest, pinned to `CLICKHOUSE_DEMO_FORK_REF`; `otel-demo/kustomization.yaml`
+holds our (small) delta; `make otel-up` applies both with `kubectl apply -k otel-demo/`.
+
+**Images are built locally.** The fork publishes **amd64-only** images, which cannot run on
+Apple Silicon, so `make demo-images` builds all 19 services from source for your architecture
+(`clickstack-local/ch-otel-demo:latest-*`) and loads them into kind. Roughly 12 minutes the
+first time, cached afterwards. `make otel-up` refuses to deploy if the images, the vendored
+manifest and `.env` disagree about which fork commit they came from.
+
+**Failure scenarios come from the fork's flagd defaults** — `paymentCacheLeak` is on, which
+produces the ClickStack walkthrough's incident (`Visa cache full: cannot add new item.` →
+`Failed to place order`) continuously. There is no `SCENARIOS` variable; to change flags at
+runtime, use the flagd UI:
 
 ```bash
-make otel-up                                   # default: paymentFailure=25% (payment incident only)
-make otel-up SCENARIOS=none                     # clean/healthy demo, no failures
-make otel-up SCENARIOS="paymentFailure=50% kafkaQueueProblems=on"   # custom
-make otel-up SCENARIOS=paymentCacheLeak         # ClickStack "Visa cache full" incident
-make otel-scenarios                             # list every flag + its variants
+kubectl -n otel-demo port-forward deploy/flagd 4000:4000   # then open http://localhost:4000
 ```
 
-- **Default** (bare `make otel-up`): `paymentFailure=25%` — ~1 in 4 checkouts fails at
-  the charge step (checkout `PlaceOrder` → `failed to charge card`), the payment-incident
-  story, without extra product-catalog/recommendation noise. Add more via `SCENARIOS`.
-- **`SCENARIOS=none`**: all failure flags stay off.
-- **`SCENARIOS="flag[=variant] ..."`**: exactly those flags. A bare flag → its `on`
-  variant; `paymentFailure` bare → `25%`. Unknown flags/variants fail loudly with the
-  valid options. Run `make otel-scenarios` to see the catalog.
+The overlay sets the payment cache to 10 entries (the manifest ships 100000, at which the
+incident never fires), so expect a minute or two of checkout traffic before it starts throwing.
+Two load generators drive the store: the Locust API user, and an artillery scenario that runs a
+real Chromium browser through the storefront.
 
-#### The "Visa cache full" incident (`SCENARIOS=paymentCacheLeak`)
-
-This reproduces the exact incident from the ClickStack
-[remote demo walkthrough](https://clickhouse.com/docs/use-cases/observability/clickstack/getting-started/remote-demo-data)
-(`Visa cache full: cannot add new item.` → `Failed to place order`) **live in your own
-cluster**. That scenario exists only in ClickHouse's demo *fork*, not the stock chart, so
-selecting it swaps three services — `payment`, `load-generator`, and `frontend` — to the fork
-build on top of the stock chart (`frontend` is what logs `Failed to place order`; the stock
-frontend's checkout route has no error handling). Because the fork's published images are
-amd64-only, `deploy-otel.sh` builds them locally for your architecture and loads them into
-kind (cached under `.cache/`; first run takes a few extra minutes). It needs a minute or two
-of distinct-Visa checkout traffic to fill the cache (`CACHE_SIZE`, default 10, tunable via
-`VISA_CACHE_SIZE`) before `Visa cache full` starts throwing. Composable, e.g.
-`SCENARIOS="paymentCacheLeak paymentFailure=25%"`. Pin the fork via
-`CLICKHOUSE_DEMO_FORK_REF` in `.env`.
+**Upgrading the fork:** bump `CLICKHOUSE_DEMO_FORK_REF` in `.env`, run
+`scripts/refresh-demo-manifest.sh` (re-vendors the manifest — review the `git diff`), then
+`make demo-images`.
 
 > To walk through the demo end-to-end you also need the HyperDX **data sources** configured —
 > see [Replicate the ClickStack walkthrough](#replicate-the-clickstack-walkthrough) below.
-
-> The demo chart bakes the flag catalog into a static file with no Helm override, so
-> `deploy-otel.sh` delta-patches the selection into its own `flagd-config-scenarios`
-> ConfigMap, which `flagd` mounts via a values override (leaving the chart's
-> `flagd-config` untouched to avoid a Helm field-ownership conflict), then restarts
-> `flagd` (which only reads the file at startup). Idempotent, and self-heals on chart
-> upgrades — it encodes only the selected delta, never a full copy.
 
 ### Replicate the ClickStack walkthrough
 
@@ -178,9 +179,9 @@ The ClickStack
 reads **four HyperDX data sources** — Logs, Traces, Metrics, Sessions. Two things are
 required to follow it against **your own** stack (steps 1–13):
 
-**1. Generate the data** — deploy the Visa-cache incident:
+**1. Generate the data** — the incident is on by default:
 ```bash
-make otel-up SCENARIOS=paymentCacheLeak      # fork payment + load-generator + frontend
+make demo-images && make otel-up             # fork images; paymentCacheLeak is a flagd default
 ```
 This produces the `Failed to place order` frontend log (step 6), the failing checkout
 **traces** (step 8) — the log carries a `TraceId`, so its `Trace` button works — and the
@@ -213,21 +214,18 @@ the hosted HyperDX UI → **Team Settings → Sources**, all pointing at your `d
 The **Correlated Trace Source** on the Logs source is what makes the `Trace` button appear on
 a log (step 8). With the default OpenTelemetry schema HyperDX infers the column mappings.
 
-> **Why the fork services need `HYPERDX_API_KEY`.** Both the fork `frontend` and `payment`
-> initialise telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns
-> unless an api key is in the environment** ("OpenTelemetry SDK initialization skipped"). With
-> it skipped they emit **no spans and no app metrics**, and their logs carry an empty
-> `TraceId` — so no `Trace` button (step 8) and no cache gauge (step 13), no matter how the
-> sources are configured. The SDK also exports OTLP over **HTTP** while the chart points
-> `OTEL_EXPORTER_OTLP_ENDPOINT` at the collector's **gRPC** port, so the per-signal
-> `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` vars redirect it to `:4318`. All of this
-> is handled in `otel/otel-demo-visa-cache-values.yaml`; the key is only sent as an
-> `Authorization` header and our own collector doesn't authenticate it.
+> **Why the demo needs `HYPERDX_API_KEY`.** The fork's `frontend` and `payment` initialise
+> telemetry through `@hyperdx/node-opentelemetry`, whose `init()` **hard-returns unless an api
+> key is in the environment** ("OpenTelemetry SDK initialization skipped"). With it skipped they
+> emit no spans and no app metrics, and their logs carry an empty `TraceId` — so no `Trace`
+> button (step 8) and no cache gauge (step 13), however the sources are configured.
+> `otel-demo/hyperdx-secret.yaml` supplies it. The value is only ever sent as an `Authorization`
+> header to our own collector, which doesn't authenticate, so any non-empty string works.
 
-**Known limitations (tracked as GitHub issues):**
-- **Session replay (steps 14–15)** is not yet included — it needs browser RUM (the fork
-  frontend's HyperDX browser SDK wired to an ingestion endpoint, a Playwright browser-traffic
-  driver, and the Sessions source populated).
+**Session replay (steps 14–15).** The data is there: the `artillery-loadgen` deployment drives
+a real Chromium browser through the storefront, so the fork frontend's HyperDX browser RUM SDK
+writes to `hyperdx_sessions` continuously. Configure the **Sessions** source (table above) to
+view it — that combination has not been verified end to end in the HyperDX UI.
 
 ### Option 2 — raw helm/kubectl
 Either path works — the scripts just codify these commands. With `.env` loaded
@@ -254,9 +252,9 @@ helm install clickstack-gateway open-telemetry/opentelemetry-collector -n observ
 helm install otel-agent   open-telemetry/opentelemetry-collector -n observability -f otel/k8s-daemonset-values.yaml
 helm install otel-cluster open-telemetry/opentelemetry-collector -n observability -f otel/k8s-deployment-values.yaml
 
-# demo (render the gateway endpoint into the values first)
-envsubst '${OTEL_GATEWAY_ENDPOINT}' < otel/otel-demo-values.yaml > otel/.otel-demo-values.rendered.yaml
-helm install otel-demo open-telemetry/opentelemetry-demo -n otel-demo -f otel/.otel-demo-values.rendered.yaml
+# demo (the fork's manifest + our overlay; images must be built first)
+scripts/build-demo-images.sh
+kubectl apply -k otel-demo/
 ```
 
 ### Access the demo UI on localhost:8080
@@ -296,21 +294,23 @@ kubectl -n observability logs deploy/clickstack-gateway-opentelemetry-collector 
   `kubernetesAttributes` preset emits config keys (e.g. `otel_annotations`) that older
   collector images reject — a mismatch crash-loops the agents.
 - The DaemonSet agent has a **control-plane toleration** so it runs on all 3 nodes.
-- `otel/otel-demo-values.yaml` **nulls the demo collector's hostPorts** (the cluster
-  agent already binds them) and **disables the flagd-ui sidecar** (it OOMs at 250Mi
-  and isn't needed).
-- **Failure-scenario flags live in a static file baked into the demo chart** (no Helm
-  value overrides them), so `deploy-otel.sh` delta-patches the selection into its own
-  `flagd-config-scenarios` ConfigMap (flagd mounts it via a values override; the
-  chart's `flagd-config` is left alone to avoid a Helm field-ownership conflict) and
-  **restarts flagd** — flagd reads the flag file only at startup. See
-  [Failure scenarios](#failure-scenarios-always-on-error-patterns) and
-  `make otel-scenarios`.
-- **The Playwright browser-traffic Locust user is disabled**
-  (`LOCUST_BROWSER_TRAFFIC_ENABLED=false`). In demo image 2.2.0 it crashes on every task
-  (`'WebsiteBrowserUser' object has no attribute 'tracer'`, an upstream locustfile bug),
-  adding only 100%-failing noise. The API load user still drives all the
-  browse/cart/checkout traffic, so the failure scenarios above work as expected.
+- **The demo images must be built locally** — the fork publishes amd64 only, so
+  `make demo-images` builds all 19 for your architecture and `kind load`s them. The overlay
+  retargets the image name to `clickstack-local/ch-otel-demo`, which exists on no registry,
+  so nothing can accidentally pull the amd64 originals back over them.
+- **Two source patches are applied to the fork clone at build time** (never to the vendored
+  manifest), and both fail loudly if they stop applying: `accounting`'s
+  `TreatWarningsAsErrors` — its `NuGetAudit` runs at level `low`, so OpenTelemetry advisories
+  published after the pinned commit turn into build errors, which breaks on amd64 too — and
+  the artillery Dockerfile, whose `artilleryio/artillery` base is amd64-only on every tag.
+- **There is no demo collector.** The fork's design has apps export straight to the ClickStack
+  collector, so an `ExternalName` Service aliases `my-clickstack-otel-collector` to our
+  gateway. A consequence: no spanmetrics — HyperDX derives service health from traces. If we
+  ever want spanmetrics, it belongs in the gateway, not the demo.
+- **`scripts/check-overlay.sh` runs on every deploy** and asserts the overlay's invariants
+  (19 local images, no `Always` pull policies, `CACHE_SIZE=10`, Jaeger removed, alias and
+  secret present), so a fork refresh that silently drops one is caught before it becomes a
+  crash-looping pod.
 
 ## Reproducibility check
 

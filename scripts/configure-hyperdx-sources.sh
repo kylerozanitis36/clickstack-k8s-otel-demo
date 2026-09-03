@@ -50,7 +50,7 @@ echo "=== ClickHouse readiness (database '$DB') ==="
 for t in otel_logs otel_traces otel_metrics_gauge otel_metrics_sum otel_metrics_histogram hyperdx_sessions; do
   printf "  %-24s rows=%s\n" "$t" "$(ch "SELECT count() FROM $DB.$t" 2>/dev/null || echo '?')"
 done
-echo "  (0 rows just means no traffic yet — deploy with SCENARIOS=paymentCacheLeak and drive checkouts.)"
+echo "  (0 rows just means no traffic yet — run 'make demo-images && make otel-up' and give the load generators a few minutes.)"
 
 # --- Managed Cloud API (best-effort) ----------------------------------------------------
 if [ -z "${CLICKHOUSE_CLOUD_ORG_ID:-}" ] || [ -z "${CLICKHOUSE_CLOUD_SERVICE_ID:-}" ] \

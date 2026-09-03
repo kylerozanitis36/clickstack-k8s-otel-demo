@@ -1,0 +1,8 @@
+repo: https://github.com/ClickHouse/opentelemetry-demo.git
+commit: d658416d6b36381126eba4416877b6518c320921
+path: kubernetes/opentelemetry-demo.yaml
+vendored: 2026-09-01T18:52:07Z
+
+This directory is a VERBATIM copy of the upstream fork. Never edit it by hand:
+all customisation belongs in otel-demo/kustomization.yaml. To move to a newer
+fork revision, run scripts/refresh-demo-manifest.sh <sha> and review the diff.
